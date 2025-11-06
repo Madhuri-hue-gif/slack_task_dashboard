@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>Task Dashboard</title>
+  <link rel="stylesheet" href="/style/style.css">
+  <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+</head>
+<body>
+  <h2> Task Dashboard</h2>
+  <p>Your Slack ID: <b>{{ user_id }}</b></p>
+  <div id="tasks"></div>
+
+  <script>
+    const userId = "{{ user_id }}";
+    const socket = io();
+    socket.on("task_update", loadTasks);
+
+    function loadTasks() {
+      fetch(`/api/tasks/${userId}`).then(r => r.json()).then(tasks => {
+        const html = `
+          <table>
+            <thead><tr><th>ID</th><th>Creator</th><th>Assigned To</th><th>Task</th><th>Status</th><th>Due</th><th>Action</th></tr></thead>
+            <tbody>
+              ${tasks.map(t => `
+                <tr>
+                  <td>${t.id}</td>
+                  <td>${t.creator}</td>
+                  <td>${t.assigned_to}</td>
+                  <td>${t.text}</td>
+                  <td>${t.done ? '<span class="badge done">Done</span>' : '<span class="badge pending">Pending</span>'}</td>
+                  <td>${t.due}</td>
+                  <td>${!t.done ? `<button onclick="markComplete(${t.id})"> Complete</button>` : ''}</td>
+                </tr>
+              `).join("")}
+            </tbody>
+          </table>`;
+        document.getElementById("tasks").innerHTML = html;
+      });
+    }
+
+    async function markComplete(id) {
+      await fetch("/api/complete_task", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({task_id: id})
+      });
+    }
+
+    loadTasks();
+  </script>
+</body>
+</html>
