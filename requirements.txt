@@ -1,0 +1,33 @@
+# Slack Bot Framework
+slack-bolt==1.21.1
+slack-sdk==3.31.0
+
+# Environment variables
+python-dotenv==1.0.1
+
+# Date/time parsing for natural language (e.g. "tomorrow 5pm")
+dateparser==1.2.0
+
+# HTTP requests to sync with backend
+requests==2.32.3
+
+# Database (SQLite is built-in with Python, no extra install needed)
+
+# Optional for Flask/Tkinter backend (if you use one)
+Flask==3.0.3
+Flask-SocketIO==5.3.6
+python-socketio==5.11.3
+
+# Logging helpers (optional, standard in Python)
+# logging (builtin)
+
+# Threading and time (builtin)
+# threading
+# time
+slack-bolt
+slack-sdk
+flask
+flask-socketio
+python-socketio
+requests
+python-dotenv
