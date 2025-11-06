@@ -1,6 +1,6 @@
 # Slack Bot Framework
 slack-bolt==1.21.1
-slack-sdk==3.31.0
+slack-sdk>=3.33.1,<4
 
 # Environment variables
 python-dotenv==1.0.1

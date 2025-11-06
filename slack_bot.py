@@ -16,7 +16,9 @@ logging.basicConfig(level=logging.INFO)
 DB_FILE = "tasks.db"
 SLACK_BOT_TOKEN = os.getenv("SLACK_BOT_TOKEN")
 SLACK_APP_TOKEN = os.getenv("SLACK_APP_TOKEN")
-PUBLIC_HOST = os.getenv("PUBLIC_HOST", "http://192.168.1.173:5000")
+# PUBLIC_HOST = os.getenv("PUBLIC_HOST", "http://192.168.1.173:5000")
+PUBLIC_HOST = os.getenv("PUBLIC_HOST", "http://192.168.2.180:4000")
+
 
 slack_app = App(token=SLACK_BOT_TOKEN)
 client = WebClient(token=SLACK_BOT_TOKEN)
@@ -468,7 +470,7 @@ def api_complete_task():
 
 # ---------------- RUN ----------------
 def run_flask():
-    socketio.run(flask_app, host="0.0.0.0", port=5000)
+    socketio.run(flask_app, host="0.0.0.0", port=4000)
 
 if __name__ == "__main__":
     init_db()
