@@ -1,23 +1,45 @@
-import os, re, sqlite3, threading, logging
-from datetime import datetime
+import os
+import re
+import json
+import time
+import logging
+import threading
+import sqlite3
+import calendar
+from datetime import datetime, timedelta, timezone
 from flask import Flask, jsonify, send_from_directory, render_template_string, request
 from flask_socketio import SocketIO, emit
 from slack_bolt import App
 from slack_bolt.adapter.socket_mode import SocketModeHandler
 from slack_sdk import WebClient
 from dotenv import load_dotenv
-import time
-import dateparser
-import re
+from dateparser.search import search_dates
+from google import genai
+from google.genai import types
 
 load_dotenv()
+
+# --- IST timezone ---
+IST = timezone(timedelta(hours=5, minutes=30))
+
+# --- Gemini API key (replace with your valid key) ---
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+
+if not GEMINI_API_KEY:
+    raise ValueError("❌ No API key provided. Please set GEMINI_API_KEY in your .env file.")
+
+# --- Initialize Gemini client ---
+gemini_client = genai.Client(api_key=GEMINI_API_KEY)
+
+
+
 logging.basicConfig(level=logging.INFO)
 
 DB_FILE = "tasks.db"
 SLACK_BOT_TOKEN = os.getenv("SLACK_BOT_TOKEN")
 SLACK_APP_TOKEN = os.getenv("SLACK_APP_TOKEN")
-# PUBLIC_HOST = os.getenv("PUBLIC_HOST", "http://192.168.1.173:5000")
-PUBLIC_HOST = os.getenv("PUBLIC_HOST", "http://192.168.2.180:4000")
+PUBLIC_HOST = os.getenv("PUBLIC_HOST", "http://192.168.1.173:5000")
+# PUBLIC_HOST = os.getenv("PUBLIC_HOST", "http://192.168.2.180:4000")
 
 
 slack_app = App(token=SLACK_BOT_TOKEN)
@@ -113,40 +135,146 @@ def get_tasks_for_user(uid):
     ]
 
 
+# 
 
-def extract_due_date(text):
+def extract_due_date(task_text):
     """
-    Extracts due datetime from natural language text like:
-    "review book1 by 5:42 pm", "complete tomorrow 10am", "task due Friday"
-    Returns (due_iso_datetime, cleaned_text)
+    Extract due date, time, and weekday from task_text using Gemini + fallback.
+    Returns (date_str, time_str, day_str, cleaned_text)
     """
 
-    # Common date/time keywords
-    patterns = [
-        r"\bby ([^<]+)",        # "by 5pm", "by tomorrow"
-        r"\bdue ([^<]+)",       # "due tomorrow", "due Friday 11am"
-        r"\b(?:today|tomorrow|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b[^<]*",  # "tomorrow 5pm"
-    ]
+    # --- Current IST context ---
+    date_time = datetime.now(IST).replace(second=0, microsecond=0)
+    query_day = date_time.strftime("%A")       # e.g. Monday
+    current_date = date_time.strftime("%d:%m") # e.g. 07:11
+    current_time = date_time.strftime("%H:%M") # e.g. 15:42
 
-    due_str = None
-    match = None
-    for p in patterns:
-        match = re.search(p, text, flags=re.IGNORECASE)
-        if match:
-            due_str = match.group(0)
-            break
+    # --- LLM Prompt ---
+    prompt = f"""
+Reference Context:
+- Current IST Day: {query_day}
+- Current IST Date: {current_date}
+- Current IST Time: {current_time}
 
-    if not due_str:
-        return None, text  # No due info found
+You are a precise date & time extractor for a task manager used in India (IST).
 
-    # Parse with context (prefer future)
-    due_dt = dateparser.parse(due_str, settings={"PREFER_DATES_FROM": "future"})
-    if not due_dt:
-        return None, text  # Could not parse
+Your job:
+1. Determine if the text implies a **deadline** — any date, weekday, time, or relative term like "tomorrow", "next week", etc.
+2. Infer missing parts based on current IST context.
 
-    # Clean the text (remove the due info from task text)
-    cleaned_text = text.replace(due_str, "").strip()
-    return due_dt.isoformat(), cleaned_text
+Rules:
+- Only time → assume today ({query_day}, {current_date})
+- "today" → use today
+- "tomorrow" → add +1 day
+- "yesterday" → skip (no deadline)
+- Weekday ("Monday", "Tuesday", etc.):
+    * If the weekday is today or has already passed this week, pick **next occurrence**.
+    * If it's later in this week, pick that date.
+- "before <weekday>" → deadline = one day before that weekday.
+- Date-only (like "2nd") → assume current month.
+- "2 Nov" or "Nov 2" → use that date directly.
+- Missing both date/time → leave blank.
+-  Convert vague times:
+   - morning = 11:00
+   - afternoon = 14:00
+   - evening = 17:00
+   - night = 21:00
+
+
+Return output strictly as JSON:
+{{
+  "date": "DD:MM" or "",
+  "time": "HH:MM" or "",
+  "day": "Weekday" or "",
+  "text": "remaining task text without date/time info"
+}}
+
+Task: "{task_text}"
+"""
+
+    try:
+        fn_decl = {
+            "name": "extract_due_date",
+            "description": "Extracts first due date, time, and weekday from a task description.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "date": {"type": "string", "description": "Due date in DD:MM format or empty"},
+                    "time": {"type": "string", "description": "Due time in HH:MM (24h) format or empty"},
+                    "day": {"type": "string", "description": "Weekday name or empty"},
+                    "text": {"type": "string", "description": "Cleaned task text without date/time"},
+                },
+                "required": ["text"],
+            },
+        }
+
+        tools = [types.Tool(function_declarations=[fn_decl])]
+        config = types.GenerateContentConfig(tools=tools)
+
+        response = gemini_client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=[{"role": "user", "parts": [{"text": prompt}]}],
+            config=config,
+        )
+
+        candidate = response.candidates[0]
+        date_str = time_str = day_str = ""
+        cleaned_text = task_text.strip()
+
+        if candidate.content.parts and candidate.content.parts[0].function_call:
+            fn_call = candidate.content.parts[0].function_call
+            args = fn_call.args
+            if isinstance(args, str):
+                args = json.loads(args)
+
+            date_str = args.get("date") or ""
+            time_str = args.get("time") or ""
+            day_str = args.get("day") or ""
+            cleaned_text = args.get("text", task_text).strip()
+
+        # --- Defaulting Rules ---
+        if time_str and not date_str:
+            date_str = current_date
+            day_str = query_day
+        if not date_str and not time_str:
+            return None, None, None, cleaned_text
+
+        # --- Weekday fallback inference ---
+        if not date_str and day_str:
+            weekday_map = {day.lower(): i for i, day in enumerate(calendar.day_name)}
+            if day_str.lower() in weekday_map:
+                target_idx = weekday_map[day_str.lower()]
+                today_idx = weekday_map[query_day.lower()]
+                days_ahead = (target_idx - today_idx) % 7
+                if days_ahead == 0:
+                    days_ahead = 7
+                due_dt = date_time + timedelta(days=days_ahead)
+                return due_dt.strftime("%d:%m"), "23:59", day_str, cleaned_text
+
+        # --- Final validation ---
+        year = date_time.year
+        if date_str:
+            try:
+                if time_str:
+                    due_dt = datetime.strptime(f"{date_str}:{year} {time_str}", "%d:%m:%Y %H:%M").replace(tzinfo=IST)
+                else:
+                    due_dt = datetime.strptime(f"{date_str}:{year} 23:59", "%d:%m:%Y %H:%M").replace(tzinfo=IST)
+                return due_dt.strftime("%d:%m"), due_dt.strftime("%H:%M"), due_dt.strftime("%A"), cleaned_text
+            except Exception:
+                pass
+
+    except Exception as e:
+        print(f"⚠️ LLM extraction failed: {e}")
+
+    # --- Fallback using dateparser ---
+    results = search_dates(task_text, settings={"PREFER_DATES_FROM": "future"})
+    if results:
+        matched_text, due_dt = results[0]
+        cleaned_text = task_text.replace(matched_text, "").strip()
+        return due_dt.strftime("%d:%m"), due_dt.strftime("%H:%M"), due_dt.strftime("%A"), cleaned_text
+
+    return None, None, None, task_text.strip()
+
 
 
 def reminder_loop():
@@ -281,6 +409,8 @@ def complete_task_logic(task_id, user_who_clicked, slack_channel=None, message_t
 @slack_app.command("/addtask")
 def add_task(ack, body, client, logger):
     ack()
+
+    # --- Extract invoker & text ---
     user_id_invoker = body["user_id"]
     raw_text = body.get("text", "").strip()
     logger.info(f"COMMAND TEXT: {raw_text}")
@@ -292,6 +422,7 @@ def add_task(ack, body, client, logger):
         )
         return
 
+    # --- Detect assignee mention ---
     mention_match = re.search(r"<@([A-Z0-9]+)(?:\|[^>]+)?>", raw_text)
     assigned_to_user_id = user_id_invoker
     task_text = raw_text
@@ -299,27 +430,55 @@ def add_task(ack, body, client, logger):
     if mention_match:
         assigned_to_user_id = mention_match.group(1)
         task_text = re.sub(r"<@([A-Z0-9]+)(?:\|[^>]+)?>", "", raw_text).strip()
-    # Extract due date from text
-   
-    due, task_text = extract_due_date(task_text)
-    task_id = add_task_db(user_id_invoker, assigned_to_user_id, task_text, due=due)
-    
-    #format due date for slack
-    if due:
+
+    # --- Extract due date ---
+    date_str, time_str, day_str, task_text = extract_due_date(task_text)
+
+    # print("------------------------------------------------")
+    # print(" Extractor returned:")
+    # print(f"  Task text : {task_text}")
+    # print(f"  Date      : {date_str}")
+    # print(f"  Time      : {time_str}")
+    # print(f"  Day       : {day_str}")
+    # print("------------------------------------------------")
+
+    # --- Build due datetime ---
+    due = None
+    if date_str and time_str:
         try:
-            due_dt=datetime.fromisoformat(due)
-            due_str=due_dt.strftime("%a, %b %d at %I:%M %p")
-        except Exception:
-            due_str=due
+            year = datetime.now().year
+            due_dt = datetime.strptime(f"{date_str}:{year} {time_str}", "%d:%m:%Y %H:%M")
+            due = due_dt.isoformat()
+        except Exception as e:
+            print("⚠️ Date parse error:", e)
+    elif date_str and not time_str:
+        try:
+            year = datetime.now().year
+            time_str = "23:59"
+            due_dt = datetime.strptime(f"{date_str}:{year} {time_str}", "%d:%m:%Y %H:%M")
+            due = due_dt.isoformat()
+        except Exception as e:
+            print("⚠️ Date parse error:", e)
+
+    # --- Always add the task (even if due=None) ---
+    task_id = add_task_db(user_id_invoker, assigned_to_user_id, task_text, due=due)
+
+    # --- Build Slack-friendly due display ---
+    if due:
+        due_dt = datetime.fromisoformat(due)
+        due_str = due_dt.strftime("%a, %b %d at %I:%M %p")
     else:
-        due_str="No due time"
+        due_str = "No due time"
+
+    # --- Send confirmation to Slack ---
+    client.chat_postMessage(
+        channel=user_id_invoker,
+        text=f"✅ Task added: *{task_text}* (id: {task_id})\n⏰ *Due:* {due_str}"
+    )
 
 
-    # Confirm to creator
-    client.chat_postMessage(channel=user_id_invoker, 
-                            text=f"✅ Task added: *{task_text}* (id: {task_id})\n⏰ *Due:* {due_str}"
-                            )
-
+    
+    
     # DM assigned user
     if assigned_to_user_id != user_id_invoker:
         try:
@@ -470,7 +629,7 @@ def api_complete_task():
 
 # ---------------- RUN ----------------
 def run_flask():
-    socketio.run(flask_app, host="0.0.0.0", port=4000)
+    socketio.run(flask_app, host="0.0.0.0", port=5000)
 
 if __name__ == "__main__":
     init_db()
