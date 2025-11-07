@@ -15,21 +15,46 @@
     const userId = "{{ user_id }}";
     const socket = io();
     socket.on("task_update", loadTasks);
+    
+
+    function formatDateTime(isoStr) {
+       if (!isoStr) return "-";
+       const dt = new Date(isoStr);
+       const day = String(dt.getDate()).padStart(2, '0');
+       const month = String(dt.getMonth() + 1).padStart(2, '0');
+       const year = dt.getFullYear();
+       
+       let hours = dt.getHours();
+       const minutes = String(dt.getMinutes()).padStart(2, '0');
+       const ampm = hours >= 12 ? 'PM' : 'AM';
+       ours = hours % 12;
+        if (hours === 0) hours = 12;
+        hours = String(hours).padStart(2, '0');
+
+      return `${day}/${month}/${year} ${hours}:${minutes} ${ampm}`;
+}
 
     function loadTasks() {
       fetch(`/api/tasks/${userId}`).then(r => r.json()).then(tasks => {
         const html = `
           <table>
-            <thead><tr><th>ID</th><th>Creator</th><th>Assigned To</th><th>Task</th><th>Status</th><th>Due</th><th>Action</th></tr></thead>
+            <thead>
+              <tr>
+              <th>Sr. No.</th>
+              <th>ID</th>
+              <th>Creator</th>
+              <th>Assigned To</th><th>Task</th><th>Status</th><th>Due</th><th>Action</th></tr></thead>
             <tbody>
-              ${tasks.map(t => `
+              ${tasks.map(t,index => `
                 <tr>
+                  <td>${index + 1}</td>  <!-- Sr. No. -->
                   <td>${t.id}</td>
                   <td>${t.creator}</td>
                   <td>${t.assigned_to}</td>
                   <td>${t.text}</td>
                   <td>${t.done ? '<span class="badge done">Done</span>' : '<span class="badge pending">Pending</span>'}</td>
-                  <td>${t.due}</td>
+                 <td>${formatDateTime(t.due)}</td>
+
                   <td>${!t.done ? `<button onclick="markComplete(${t.id})"> Complete</button>` : ''}</td>
                 </tr>
               `).join("")}
