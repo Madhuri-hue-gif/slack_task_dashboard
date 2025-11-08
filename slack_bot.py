@@ -38,8 +38,8 @@ logging.basicConfig(level=logging.INFO)
 DB_FILE = "tasks.db"
 SLACK_BOT_TOKEN = os.getenv("SLACK_BOT_TOKEN")
 SLACK_APP_TOKEN = os.getenv("SLACK_APP_TOKEN")
-# PUBLIC_HOST = os.getenv("PUBLIC_HOST", "http://192.168.1.173:5000")
-PUBLIC_HOST = os.getenv("PUBLIC_HOST", "http://192.168.2.180:4000")
+PUBLIC_HOST = os.getenv("PUBLIC_HOST", "http://192.168.1.173:5000")
+# PUBLIC_HOST = os.getenv("PUBLIC_HOST", "http://192.168.2.180:4000")
 
 
 slack_app = App(token=SLACK_BOT_TOKEN)
@@ -95,8 +95,8 @@ def add_task_db(creator, assigned_to, text, due=None, file_url=None):
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
     c.execute("""INSERT INTO tasks (user_id, assigned_to,created_at, text, done, due, file_url)
-                 VALUES (?, ?, ?, 0, ?, ?, ?)""",
-              (creator, assigned_to,created_at, text, datetime.now().isoformat(), due, file_url))
+                 VALUES (?, ?, ?, ?, ?, ?,?)""",
+              (creator, assigned_to,created_at, text, 0, due, file_url))
     conn.commit()
     tid = c.lastrowid
     conn.close()
@@ -317,9 +317,9 @@ def reminder_loop():
                 time_left = (due_dt - now).total_seconds()
                 date_key = now.strftime("%Y-%m-%d")
 
-                # --- 1️⃣ Daily gentle reminder at 9 AM
+                # --- 1️⃣ Daily gentle reminder at 10 AM
                 daily_key = f"{task_id}:daily:{date_key}"
-                if now.hour == 9 and daily_key not in sent_reminders:
+                if now.hour == 10 and daily_key not in sent_reminders:
                     try:
                         dm = client.conversations_open(users=assigned_to)
                         dm_channel = dm["channel"]["id"]
@@ -480,9 +480,9 @@ def add_task(ack, body, client, logger):
     # --- Send confirmation to Slack ---
     client.chat_postMessage(
         channel=user_id_invoker,
-        text=f"✅ Task added: *{task_text}* (id: {task_id})\n⏰ *Due:* {due_str}\n"
-         f"⏰ *Due:* {due_str}"
-           # NEW
+        text=f"✅ Task added: *{task_text}* (id: {task_id})\n⏰ *Due:* {due_str}"
+         
+           
     )
 
 
@@ -638,7 +638,7 @@ def api_complete_task():
 
 # ---------------- RUN ----------------
 def run_flask():
-    socketio.run(flask_app, host="0.0.0.0", port=4000)
+    socketio.run(flask_app, host="0.0.0.0", port=5000)
 
 if __name__ == "__main__":
     init_db()
