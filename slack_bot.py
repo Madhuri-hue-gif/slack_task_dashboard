@@ -38,8 +38,8 @@ logging.basicConfig(level=logging.INFO)
 DB_FILE = "tasks.db"
 SLACK_BOT_TOKEN = os.getenv("SLACK_BOT_TOKEN")
 SLACK_APP_TOKEN = os.getenv("SLACK_APP_TOKEN")
-PUBLIC_HOST = os.getenv("PUBLIC_HOST", "http://192.168.1.173:5000")
-# PUBLIC_HOST = os.getenv("PUBLIC_HOST", "http://192.168.2.180:4000")
+# PUBLIC_HOST = os.getenv("PUBLIC_HOST", "http://192.168.1.173:5000")
+PUBLIC_HOST = os.getenv("PUBLIC_HOST", "http://192.168.2.180:4000")
 
 
 slack_app = App(token=SLACK_BOT_TOKEN)
@@ -58,9 +58,10 @@ def init_db():
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         user_id TEXT,
         assigned_to TEXT,
+        created_at TEXT,
         text TEXT,
         done INTEGER DEFAULT 0,
-        created_at TEXT,
+        
         completed_at TEXT,
         due TEXT,
         file_url TEXT
@@ -90,11 +91,12 @@ def add_task_db(creator, assigned_to, text, due=None, file_url=None):
             due_dt=datetime.fromisoformat(due)
         except Exception:
             due_dt=None
+    created_at = datetime.now().isoformat()
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
-    c.execute("""INSERT INTO tasks (user_id, assigned_to, text, done, created_at, due, file_url)
+    c.execute("""INSERT INTO tasks (user_id, assigned_to,created_at, text, done, due, file_url)
                  VALUES (?, ?, ?, 0, ?, ?, ?)""",
-              (creator, assigned_to, text, datetime.now().isoformat(), due, file_url))
+              (creator, assigned_to,created_at, text, datetime.now().isoformat(), due, file_url))
     conn.commit()
     tid = c.lastrowid
     conn.close()
@@ -118,7 +120,7 @@ def get_task_db(task_id):
 def get_tasks_for_user(uid):
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
-    c.execute("""SELECT id, user_id, assigned_to, text, done, due FROM tasks
+    c.execute("""SELECT id, user_id, assigned_to, created_at,text, done, due FROM tasks
                  WHERE user_id=? OR assigned_to=? ORDER BY id DESC""", (uid, uid))
     rows = c.fetchall()
     conn.close()
@@ -127,9 +129,12 @@ def get_tasks_for_user(uid):
             "id": r[0],
             "creator": get_username(r[1]),
             "assigned_to": get_username(r[2]),
-            "text": r[3],
-            "done": bool(r[4]),
-            "due": r[5] or "-"
+            "created_at": r[3] or "-",
+            "text": r[4],
+            
+            "done": bool(r[5]),
+            "due": r[6] or "-",
+            
         }
         for r in rows
     ]
@@ -469,11 +474,15 @@ def add_task(ack, body, client, logger):
         due_str = due_dt.strftime("%a, %b %d at %I:%M %p")
     else:
         due_str = "No due time"
-
+    
+    # assigned_dt=datetime.fromisoformat(datetime.now().isoformat())
+    # assigned_str=assigned_dt.strftime("%a, %b %d at %I:%M %p")
     # --- Send confirmation to Slack ---
     client.chat_postMessage(
         channel=user_id_invoker,
-        text=f"✅ Task added: *{task_text}* (id: {task_id})\n⏰ *Due:* {due_str}"
+        text=f"✅ Task added: *{task_text}* (id: {task_id})\n⏰ *Due:* {due_str}\n"
+         f"⏰ *Due:* {due_str}"
+           # NEW
     )
 
 
@@ -629,7 +638,7 @@ def api_complete_task():
 
 # ---------------- RUN ----------------
 def run_flask():
-    socketio.run(flask_app, host="0.0.0.0", port=5000)
+    socketio.run(flask_app, host="0.0.0.0", port=4000)
 
 if __name__ == "__main__":
     init_db()
