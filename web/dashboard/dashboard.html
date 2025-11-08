@@ -27,7 +27,7 @@
        let hours = dt.getHours();
        const minutes = String(dt.getMinutes()).padStart(2, '0');
        const ampm = hours >= 12 ? 'PM' : 'AM';
-       ours = hours % 12;
+       hours = hours % 12;
         if (hours === 0) hours = 12;
         hours = String(hours).padStart(2, '0');
 
@@ -41,16 +41,19 @@
             <thead>
               <tr>
               <th>Sr. No.</th>
-              <th>ID</th>
+              <th>Task ID</th>
               <th>Creator</th>
-              <th>Assigned To</th><th>Task</th><th>Status</th><th>Due</th><th>Action</th></tr></thead>
+              
+              <th>Assigned To</th>
+              <th>Assigned date </th><th>Task</th><th>Status</th><th>Due</th><th>Action</th></tr></thead>
             <tbody>
-              ${tasks.map(t,index => `
+              ${tasks.map((t,index)=> `
                 <tr>
                   <td>${index + 1}</td>  <!-- Sr. No. -->
                   <td>${t.id}</td>
                   <td>${t.creator}</td>
                   <td>${t.assigned_to}</td>
+                  <td>${formatDateTime(t.created_at)}</td>
                   <td>${t.text}</td>
                   <td>${t.done ? '<span class="badge done">Done</span>' : '<span class="badge pending">Pending</span>'}</td>
                  <td>${formatDateTime(t.due)}</td>
