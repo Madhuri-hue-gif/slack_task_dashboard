@@ -38,8 +38,8 @@ logging.basicConfig(level=logging.INFO)
 DB_FILE = "tasks.db"
 SLACK_BOT_TOKEN = os.getenv("SLACK_BOT_TOKEN")
 SLACK_APP_TOKEN = os.getenv("SLACK_APP_TOKEN")
-PUBLIC_HOST = os.getenv("PUBLIC_HOST", "http://192.168.1.173:5000")
-# PUBLIC_HOST = os.getenv("PUBLIC_HOST", "http://192.168.2.180:4000")
+# PUBLIC_HOST = os.getenv("PUBLIC_HOST", "http://192.168.1.173:5000")
+PUBLIC_HOST = os.getenv("PUBLIC_HOST", "http://192.168.2.180:4000")
 
 
 slack_app = App(token=SLACK_BOT_TOKEN)
@@ -50,24 +50,41 @@ socketio = SocketIO(flask_app, cors_allowed_origins="*")
 WEB_DASH_PATH = os.path.join("web", "dashboard")
 WEB_STYLE_PATH = os.path.join("web", "style")
 
-# ---------------- DATABASE ----------------
+
 def init_db():
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
-    c.execute("""CREATE TABLE IF NOT EXISTS tasks (
+
+    # --- Main tasks table ---
+    c.execute("""
+    CREATE TABLE IF NOT EXISTS tasks (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        user_id TEXT,
-        assigned_to TEXT,
-        created_at TEXT,
+        user_id TEXT,             -- The creator of the task
         text TEXT,
-        done INTEGER DEFAULT 0,
-        
-        completed_at TEXT,
+        created_at TEXT,
         due TEXT,
-        file_url TEXT
-    )""")
+        file_url TEXT,
+        done INTEGER DEFAULT 0,
+        completed_at TEXT
+    )
+    """)
+
+    # --- Task assignments table (one row per assigned user) ---
+    c.execute("""
+    CREATE TABLE IF NOT EXISTS task_assignments (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        task_id INTEGER,
+        assigned_to TEXT,
+        done INTEGER DEFAULT 0,
+        completed_at TEXT,
+        FOREIGN KEY (task_id) REFERENCES tasks(id)
+    )
+    """)
+
     conn.commit()
     conn.close()
+
+
 
 # ---------------- HELPERS ----------------
 user_cache = {}
@@ -83,31 +100,40 @@ def get_username(uid):
         return username
     except Exception:
         return uid
-
-def add_task_db(creator, assigned_to, text, due=None, file_url=None):
-    if due:
-        try:
-            #convert due text to datetime
-            due_dt=datetime.fromisoformat(due)
-        except Exception:
-            due_dt=None
+def add_task_db(creator, assignees, text, due=None, file_url=None):
     created_at = datetime.now().isoformat()
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
-    c.execute("""INSERT INTO tasks (user_id, assigned_to,created_at, text, done, due, file_url)
-                 VALUES (?, ?, ?, ?, ?, ?,?)""",
-              (creator, assigned_to,created_at, text, 0, due, file_url))
-    conn.commit()
-    tid = c.lastrowid
-    conn.close()
-    return tid
 
-def complete_task_db(task_id):
+    # ✅ Fix here: use user_id, not creator
+    c.execute("""
+    INSERT INTO tasks (user_id, text, created_at, due, file_url)
+    VALUES (?, ?, ?, ?, ?)
+    """, (creator, text, created_at, due, file_url))
+
+    task_id = c.lastrowid
+
+    # Add each assigned user to task_assignments
+    for user in assignees:
+        c.execute("""
+        INSERT INTO task_assignments (task_id, assigned_to)
+        VALUES (?, ?)
+        """, (task_id, user))
+
+    conn.commit()
+    conn.close()
+    return task_id
+
+def complete_task_db(task_id, user_id):
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
-    c.execute("UPDATE tasks SET done=1, completed_at=? WHERE id=?", (datetime.now().isoformat(), task_id))
+    c.execute("""UPDATE task_assignments 
+                 SET done=1, completed_at=? 
+                 WHERE task_id=? AND assigned_to=?""",
+              (datetime.now().isoformat(), task_id, user_id))
     conn.commit()
     conn.close()
+
 
 def get_task_db(task_id):
     conn = sqlite3.connect(DB_FILE)
@@ -120,8 +146,13 @@ def get_task_db(task_id):
 def get_tasks_for_user(uid):
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
-    c.execute("""SELECT id, user_id, assigned_to, created_at,text, done, due FROM tasks
-                 WHERE user_id=? OR assigned_to=? ORDER BY id DESC""", (uid, uid))
+    c.execute("""
+        SELECT t.id, t.user_id, ta.assigned_to, t.text, t.due, ta.done, t.created_at
+        FROM task_assignments ta
+        JOIN tasks t ON ta.task_id = t.id
+        WHERE ta.assigned_to = ? OR t.user_id = ?
+        ORDER BY t.id DESC
+    """, (uid, uid))
     rows = c.fetchall()
     conn.close()
     return [
@@ -129,15 +160,14 @@ def get_tasks_for_user(uid):
             "id": r[0],
             "creator": get_username(r[1]),
             "assigned_to": get_username(r[2]),
-            "created_at": r[3] or "-",
-            "text": r[4],
-            
+            "text": r[3],
+            "due": r[4] or "-",
             "done": bool(r[5]),
-            "due": r[6] or "-",
-            
+            "created_at": r[6] or "-"
         }
         for r in rows
     ]
+
 
 
 # 
@@ -281,45 +311,56 @@ Task: "{task_text}"
     return None, None, None, task_text.strip()
 
 
-
 def reminder_loop():
     """
     Background thread that checks for tasks due soon and sends reminders.
-    - Prevents duplicate reminders
-    - Handles timezone correctly
-    - Sends one daily reminder (9 AM)
-    - Sends one 1-hour & one 30-min reminder per task
+    Works with two-table schema: tasks + task_assignments.
+    Sends:
+      - Daily reminder at 10 AM
+      - 1-hour before due
+      - 30-min before due
+    Avoids duplicate reminders using sent_reminders set.
     """
     import pytz
-    tz = pytz.timezone("Asia/Kolkata")  # change if needed
+    tz = pytz.timezone("Asia/Kolkata")  # IST
 
-    sent_reminders = set()  # key format: f"{task_id}:{type}:{date}"
+    sent_reminders = set()  # format: f"{task_id}:{assigned_to}:{type}:{date}"
 
     while True:
         try:
             now = datetime.now(tz)
+            date_key = now.strftime("%Y-%m-%d")
 
+            # --- Fetch all pending assignments with task info ---
             conn = sqlite3.connect(DB_FILE)
             c = conn.cursor()
-            c.execute("SELECT id, assigned_to, text, done, due FROM tasks WHERE done=0 AND due IS NOT NULL")
-            tasks = c.fetchall()
+            c.execute("""
+                SELECT t.id, ta.assigned_to, t.text, ta.done, t.due
+                FROM task_assignments ta
+                JOIN tasks t ON t.id = ta.task_id
+                WHERE ta.done = 0 AND t.due IS NOT NULL
+            """)
+            rows = c.fetchall()
             conn.close()
 
-            for task in tasks:
-                task_id, assigned_to, text, done, due_str = task
+            for task_id, assigned_to, text, done, due_str in rows:
+                if not assigned_to:
+                    continue  # skip if no assigned user
+
+                # Parse due datetime
                 try:
                     due_dt = datetime.fromisoformat(due_str)
                     if due_dt.tzinfo is None:
                         due_dt = tz.localize(due_dt)
                 except Exception:
+                    logging.exception(f"Failed to parse due datetime for task {task_id}")
                     continue
 
                 time_left = (due_dt - now).total_seconds()
-                date_key = now.strftime("%Y-%m-%d")
 
-                # --- 1️⃣ Daily gentle reminder at 10 AM
-                daily_key = f"{task_id}:daily:{date_key}"
-                if now.hour == 10 and daily_key not in sent_reminders:
+                # --- Daily reminder at 10 AM ---
+                daily_key = f"{task_id}:{assigned_to}:daily:{date_key}"
+                if 10 <= now.hour < 11 and daily_key not in sent_reminders:
                     try:
                         dm = client.conversations_open(users=assigned_to)
                         dm_channel = dm["channel"]["id"]
@@ -329,11 +370,11 @@ def reminder_loop():
                         )
                         sent_reminders.add(daily_key)
                     except Exception:
-                        logging.exception("Daily reminder failed")
+                        logging.exception(f"Daily reminder failed for task {task_id} -> user {assigned_to}")
 
-                # --- 2️⃣ 1-hour reminder
-                hour_key = f"{task_id}:hour:{date_key}"
-                if 0 < time_left <= 3600 and hour_key not in sent_reminders:
+                # --- 1-hour reminder ---
+                hour_key = f"{task_id}:{assigned_to}:hour:{date_key}"
+                if 0 < abs(time_left - 3600) < 65 and hour_key not in sent_reminders:
                     try:
                         dm = client.conversations_open(users=assigned_to)
                         dm_channel = dm["channel"]["id"]
@@ -343,11 +384,11 @@ def reminder_loop():
                         )
                         sent_reminders.add(hour_key)
                     except Exception:
-                        logging.exception("1-hour reminder failed")
+                        logging.exception(f"1-hour reminder failed for task {task_id} -> user {assigned_to}")
 
-                # --- 3️⃣ 30-minute reminder
-                half_key = f"{task_id}:half:{date_key}"
-                if 0 < time_left <= 1800 and half_key not in sent_reminders:
+                # --- 30-minute reminder ---
+                half_key = f"{task_id}:{assigned_to}:half:{date_key}"
+                if 0 < abs(time_left - 1800) < 65 and half_key not in sent_reminders:
                     try:
                         dm = client.conversations_open(users=assigned_to)
                         dm_channel = dm["channel"]["id"]
@@ -357,34 +398,57 @@ def reminder_loop():
                         )
                         sent_reminders.add(half_key)
                     except Exception:
-                        logging.exception("30-minute reminder failed")
+                        logging.exception(f"30-min reminder failed for task {task_id} -> user {assigned_to}")
 
         except Exception:
             logging.exception("Reminder loop error")
 
         time.sleep(60)  # run every minute
 
+
+
 # ---------------- COMMON COMPLETION LOGIC ----------------
 def complete_task_logic(task_id, user_who_clicked, slack_channel=None, message_ts=None):
     """
-    Marks a task complete and optionally updates Slack DM message.
+    Marks a task complete and notifies the creator.
     Returns (success, message)
     """
+    # --- Fetch task info from tasks table ---
     task = get_task_db(task_id)
     if not task:
         return False, "Task not found."
 
-    if task[4] == 1:  # done
+    task_text = task[2] or "[No description]"  # task[2] = text
+    creator_id = task[1]  # task[1] = user_id (creator)
+
+    # Check if this assignment is already done
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute(
+        "SELECT done FROM task_assignments WHERE task_id=? AND assigned_to=?",
+        (task_id, user_who_clicked)
+    )
+    row = c.fetchone()
+    if row and row[0] == 1:
+        conn.close()
         return False, "Task already completed."
 
-    complete_task_db(task_id)
-    socketio.emit("task_update", {})  # refresh dashboard
+    # --- Mark assignment as done ---
+    complete_task_db(task_id, user_who_clicked)
 
-    task_text = task[3]
-    creator_id = task[1]
-    assigned_id = task[2]
+    # Check if all assignments are done
+    c.execute("SELECT COUNT(*) FROM task_assignments WHERE task_id=? AND done=0", (task_id,))
+    remaining = c.fetchone()[0]
+    if remaining == 0:
+        c.execute("UPDATE tasks SET done=1, completed_at=? WHERE id=?",
+                  (datetime.now().isoformat(), task_id))
+    conn.commit()
+    conn.close()
 
-    # Update Slack DM message if channel + ts provided
+    # Refresh dashboard
+    socketio.emit("task_update", {})
+
+    # --- Update Slack message if clicked via Slack button ---
     if slack_channel and message_ts:
         client.chat_update(
             channel=slack_channel,
@@ -396,7 +460,7 @@ def complete_task_logic(task_id, user_who_clicked, slack_channel=None, message_t
             }]
         )
 
-    # Notify creator if different
+    # --- Notify creator if different ---
     if creator_id and creator_id != user_who_clicked:
         try:
             dm = client.conversations_open(users=creator_id)
@@ -408,14 +472,15 @@ def complete_task_logic(task_id, user_who_clicked, slack_channel=None, message_t
         except Exception:
             logging.exception("Notify creator failed")
 
-    return True, f"Task {task_id} marked complete."
+    return True, f"🎉 <@{user_who_clicked}> completed the task: *{task_text}* (ID: {task_id})"
+
 
 # ---------------- SLACK COMMANDS ----------------
 @slack_app.command("/addtask")
 def add_task(ack, body, client, logger):
     ack()
 
-    # --- Extract invoker & text ---
+    # --- Extract invoker & text --- 
     user_id_invoker = body["user_id"]
     raw_text = body.get("text", "").strip()
     logger.info(f"COMMAND TEXT: {raw_text}")
@@ -427,15 +492,11 @@ def add_task(ack, body, client, logger):
         )
         return
 
-    # --- Detect assignee mention ---
-    mention_match = re.search(r"<@([A-Z0-9]+)(?:\|[^>]+)?>", raw_text)
-    assigned_to_user_id = user_id_invoker
-    task_text = raw_text
+    mentions = re.findall(r"<@([A-Z0-9]+)(?:\|[^>]+)?>", raw_text)
+    assigned_to_user_ids = mentions if mentions else [user_id_invoker]
+    task_text = re.sub(r"<@([A-Z0-9]+)(?:\|[^>]+)?>", "", raw_text).strip()
 
-    if mention_match:
-        assigned_to_user_id = mention_match.group(1)
-        task_text = re.sub(r"<@([A-Z0-9]+)(?:\|[^>]+)?>", "", raw_text).strip()
-
+    
     # --- Extract due date ---
     date_str, time_str, day_str, task_text = extract_due_date(task_text)
 
@@ -466,7 +527,7 @@ def add_task(ack, body, client, logger):
             print("⚠️ Date parse error:", e)
 
     # --- Always add the task (even if due=None) ---
-    task_id = add_task_db(user_id_invoker, assigned_to_user_id, task_text, due=due)
+    task_id = add_task_db(user_id_invoker, assigned_to_user_ids, task_text, due=due)
 
     # --- Build Slack-friendly due display ---
     if due:
@@ -489,13 +550,16 @@ def add_task(ack, body, client, logger):
     
     
     # DM assigned user
-    if assigned_to_user_id != user_id_invoker:
+    for assigned_user in assigned_to_user_ids:
+        if assigned_user == user_id_invoker:
+            continue
         try:
-            dm = client.conversations_open(users=assigned_to_user_id)
+            dm = client.conversations_open(users=assigned_user)
             dm_channel = dm["channel"]["id"]
-            msg_text = (f"🔔 *New Task Assigned!*\n"
-                        f"<@{user_id_invoker}> assigned you: *{task_text}*\n"f"⏰ *Due:* {due_str}"
-            )
+            msg_text = (
+                 f"🔔 *New Task Assigned!*\n" f"<@{user_id_invoker}> assigned you: *{task_text}*\n"
+                 f"⏰ *Due:* {due_str}"
+                 )
             client.chat_postMessage(
                 channel=dm_channel,
                 text=msg_text,
@@ -504,20 +568,16 @@ def add_task(ack, body, client, logger):
                     {"type": "actions",
                      "elements": [{
                          "type": "button",
-                         "text": {"type": "plain_text", "text": "✅ Mark Complete"},
-                         "style": "primary",
-                         "action_id": "complete_task",
-                         "value": str(task_id)
-                     }]
+                           "text": {"type": "plain_text", "text": "✅ Mark Complete"},
+                           "style": "primary",
+                           "action_id": "complete_task",
+                           "value": str(task_id)
+                           }]
                     }
-                ]
-            )
-        except Exception:
-            logger.exception("DM failed")
-            client.chat_postMessage(
-                channel=user_id_invoker,
-                text=f"⚠️ Could not DM <@{assigned_to_user_id}>. They might not have app access."
-            )
+                        ]
+             )
+        except Exception as e:
+            logger.exception(f"DM failed for {assigned_user}: {e}")
 
 @slack_app.command("/deletetask")
 def delete_task(ack, body, client, logger):
@@ -549,6 +609,7 @@ def delete_task(ack, body, client, logger):
 
     client.chat_postMessage(channel=user_id, text=f"🗑️ Task {task_id} deleted successfully.")
 
+
 @slack_app.command("/listtasks")
 def list_tasks(ack, body, client, logger):
     ack()
@@ -556,25 +617,53 @@ def list_tasks(ack, body, client, logger):
 
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
-    c.execute("""SELECT id, text, assigned_to, user_id, done, due, file_url
-                 FROM tasks WHERE user_id = ? OR assigned_to = ? ORDER BY id DESC""", (user_id, user_id))
+
+    # --- Fetch tasks for user considering two-table schema ---
+    c.execute("""
+        SELECT t.id, t.text, ta.assigned_to, t.user_id, ta.done, t.due, t.file_url
+        FROM tasks t
+        LEFT JOIN task_assignments ta ON t.id = ta.task_id
+        WHERE t.user_id = ? OR ta.assigned_to = ?
+        ORDER BY t.id DESC
+    """, (user_id, user_id))
     rows = c.fetchall()
     conn.close()
 
     if not rows:
-        client.chat_postMessage(channel=user_id, text="📭 You have no tasks yet.")
+        dm = client.conversations_open(users=user_id)
+        dm_channel = dm["channel"]["id"]
+        client.chat_postMessage(channel=dm_channel, text="📭 You have no tasks yet.")
         return
 
     msg_lines = []
     for row in rows:
         task_id, text, assigned_to, creator, done, due, file_url = row
         status = "✅" if done else "🕒"
-        due_text = f" (Due: {due})" if due else ""
-        assigned_text = f" → Assigned to <@{assigned_to}>" if assigned_to != creator else ""
+
+        # --- Format due date nicely ---
+        due_text = ""
+        if due and isinstance(due, str):
+            try:
+                due_dt = datetime.fromisoformat(due)
+                due_text = f" (Due: {due_dt.strftime('%a, %b %d at %I:%M %p')})"
+            except Exception:
+                due_text = f" (Due: {due})"
+
+        # --- Format assigned user correctly ---
+        assigned_text = ""
+        if assigned_to and assigned_to != creator:
+            assigned_text = f" → Assigned to <@{assigned_to}>"
+
+        # --- File attachment if exists ---
         file_text = f" 📎 <{file_url}|Attachment>" if file_url else ""
+
         msg_lines.append(f"{status} *{text}* — ID: `{task_id}`{due_text}{assigned_text}{file_text}")
 
-    client.chat_postMessage(channel=user_id, text="🧾 *Your Tasks:*\n" + "\n".join(msg_lines))
+    # --- Open DM and send message ---
+    dm = client.conversations_open(users=user_id)
+    dm_channel = dm["channel"]["id"]
+    client.chat_postMessage(channel=dm_channel, text="🧾 *Your Tasks:*\n" + "\n".join(msg_lines))
+
 
 @slack_app.command("/completetasknew")
 def complete_task_command(ack, body, client):
@@ -620,7 +709,7 @@ def serve_style(filename):
 
 @flask_app.route("/dashboard/<user_id>")
 def dashboard(user_id):
-    with open(os.path.join(WEB_DASH_PATH, "dashboard.html")) as f:
+    with open(os.path.join(WEB_DASH_PATH, "dashboard.html"),encoding="utf-8") as f:
         html = f.read().replace("{{ user_id }}", user_id)
     return render_template_string(html)
 
@@ -628,17 +717,33 @@ def dashboard(user_id):
 def api_tasks(user_id):
     return jsonify(get_tasks_for_user(user_id))
 
+# @flask_app.route("/api/complete_task", methods=["POST"])
+# def api_complete_task():
+#     data = request.get_json()
+#     task_id = data.get("task_id")
+#     complete_task_db(task_id)
+#     socketio.emit("task_update", {})
+#     return jsonify({"ok": True})
 @flask_app.route("/api/complete_task", methods=["POST"])
 def api_complete_task():
     data = request.get_json()
     task_id = data.get("task_id")
-    complete_task_db(task_id)
-    socketio.emit("task_update", {})
-    return jsonify({"ok": True})
+    user_id = data.get("user_id")
+
+    if not task_id or not user_id:
+        return jsonify({"success": False, "message": "Missing task_id or user_id"}), 400
+
+    try:
+        success, message = complete_task_logic(task_id, user_id)
+        return jsonify({"success": success, "message": message})
+    except Exception as e:
+        logging.exception("Error in completing task")
+        return jsonify({"success": False, "message": str(e)}), 500
+
 
 # ---------------- RUN ----------------
 def run_flask():
-    socketio.run(flask_app, host="0.0.0.0", port=5000)
+    socketio.run(flask_app, host="0.0.0.0", port=4000)
 
 if __name__ == "__main__":
     init_db()
