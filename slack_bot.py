@@ -38,8 +38,8 @@ logging.basicConfig(level=logging.INFO)
 DB_FILE = "tasks.db"
 SLACK_BOT_TOKEN = os.getenv("SLACK_BOT_TOKEN")
 SLACK_APP_TOKEN = os.getenv("SLACK_APP_TOKEN")
-# PUBLIC_HOST = os.getenv("PUBLIC_HOST", "http://192.168.1.173:5000")
-PUBLIC_HOST = os.getenv("PUBLIC_HOST", "http://192.168.2.180:4000")
+PUBLIC_HOST = os.getenv("PUBLIC_HOST", "http://192.168.1.173:5000")
+# PUBLIC_HOST = os.getenv("PUBLIC_HOST", "http://192.168.2.180:4000")
 
 
 slack_app = App(token=SLACK_BOT_TOKEN)
@@ -407,58 +407,156 @@ def reminder_loop():
 
 
 
-# ---------------- COMMON COMPLETION LOGIC ----------------
+# # ---------------- COMMON COMPLETION LOGIC ----------------
+
+# def complete_task_logic(task_id, user_who_clicked, slack_channel=None, message_ts=None):
+#     """
+#     Marks a task complete. Either an assigned user or the creator can mark complete.
+#     Updates the same task row / assignment row without duplicates.
+#     Returns (success, message)
+#     """
+#     task = get_task_db(task_id)
+#     if not task:
+#         return False, "Task not found."
+
+#     task_text = task[2] or "[No description]"  # task[2] = text
+#     creator_id = task[1]  # task[1] = user_id (creator)
+
+#     conn = sqlite3.connect(DB_FILE)
+#     c = conn.cursor()
+
+#     # --- Check if user is assigned ---
+#     c.execute(
+#         "SELECT id, done FROM task_assignments WHERE task_id=? AND assigned_to=?",
+#         (task_id, user_who_clicked)
+#     )
+#     assignment = c.fetchone()
+
+#     if assignment:
+#         assignment_id, done = assignment
+#         if done:
+#             conn.close()
+#             return False, "Task already completed."
+#         # Mark assignment as done
+#         c.execute(
+#             "UPDATE task_assignments SET done=1, completed_at=? WHERE id=?",
+#             (datetime.now().isoformat(), assignment_id)
+#         )
+#     elif user_who_clicked == creator_id:
+#         # Creator is marking complete
+#         # Mark all assignments as done
+#         c.execute(
+#             "UPDATE task_assignments SET done=1, completed_at=? WHERE task_id=? AND done=0",
+#             (datetime.now().isoformat(), task_id)
+#         )
+#     else:
+#         conn.close()
+#         return False, "You are not allowed to complete this task."
+
+#     # --- Check if all assignments are done to mark main task as done ---
+#     c.execute("SELECT COUNT(*) FROM task_assignments WHERE task_id=? AND done=0", (task_id,))
+#     remaining = c.fetchone()[0]
+#     if remaining == 0:
+#         c.execute("UPDATE tasks SET done=1, completed_at=? WHERE id=?",
+#                   (datetime.now().isoformat(), task_id))
+
+#     conn.commit()
+#     conn.close()
+
+#     # Refresh dashboard
+#     socketio.emit("task_update", {})
+
+#     # --- Update Slack message if clicked via Slack button ---
+#     if slack_channel and message_ts:
+#         client.chat_update(
+#             channel=slack_channel,
+#             ts=message_ts,
+#             text=f"✅ *Completed!* {task_text}",
+#             blocks=[{
+#                 "type": "section",
+#                 "text": {"type": "mrkdwn", "text": f"✅ *Completed!* {task_text}\n_Completed by <@{user_who_clicked}>_"}
+#             }]
+#         )
+
+#     # --- Notify creator if different ---
+#     if creator_id and creator_id != user_who_clicked:
+#         try:
+#             dm = client.conversations_open(users=creator_id)
+#             dm_channel = dm["channel"]["id"]
+#             client.chat_postMessage(
+#                 channel=dm_channel,
+#                 text=f"🎉 <@{user_who_clicked}> completed the task: *{task_text}* (ID: {task_id})"
+#             )
+#         except Exception:
+#             logging.exception("Notify creator failed")
+
+#     return True, f"🎉 <@{user_who_clicked}> completed the task: *{task_text}* (ID: {task_id})"
 def complete_task_logic(task_id, user_who_clicked, slack_channel=None, message_ts=None):
     """
-    Marks a task complete and notifies the creator.
-    Returns (success, message)
+    Marks a task complete. Either an assigned user or the creator can mark complete.
+    Updates Slack button to disabled in real-time.
     """
-    # --- Fetch task info from tasks table ---
     task = get_task_db(task_id)
     if not task:
         return False, "Task not found."
 
-    task_text = task[2] or "[No description]"  # task[2] = text
-    creator_id = task[1]  # task[1] = user_id (creator)
+    task_text = task[2] or "[No description]"
+    creator_id = task[1]
 
-    # Check if this assignment is already done
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
+
+    # --- Check if user is assigned ---
     c.execute(
-        "SELECT done FROM task_assignments WHERE task_id=? AND assigned_to=?",
+        "SELECT id, done FROM task_assignments WHERE task_id=? AND assigned_to=?",
         (task_id, user_who_clicked)
     )
-    row = c.fetchone()
-    if row and row[0] == 1:
+    assignment = c.fetchone()
+
+    if assignment:
+        assignment_id, done = assignment
+        if done:
+            conn.close()
+            return False, "Task already completed."
+        c.execute(
+            "UPDATE task_assignments SET done=1, completed_at=? WHERE id=?",
+            (datetime.now().isoformat(), assignment_id)
+        )
+    elif user_who_clicked == creator_id:
+        # Creator marks complete: mark all assignments done
+        c.execute(
+            "UPDATE task_assignments SET done=1, completed_at=? WHERE task_id=? AND done=0",
+            (datetime.now().isoformat(), task_id)
+        )
+    else:
         conn.close()
-        return False, "Task already completed."
+        return False, "You are not allowed to complete this task."
 
-    # --- Mark assignment as done ---
-    complete_task_db(task_id, user_who_clicked)
-
-    # Check if all assignments are done
+    # --- Update main task if all assignments done ---
     c.execute("SELECT COUNT(*) FROM task_assignments WHERE task_id=? AND done=0", (task_id,))
     remaining = c.fetchone()[0]
     if remaining == 0:
         c.execute("UPDATE tasks SET done=1, completed_at=? WHERE id=?",
                   (datetime.now().isoformat(), task_id))
+
     conn.commit()
     conn.close()
 
     # Refresh dashboard
     socketio.emit("task_update", {})
 
-    # --- Update Slack message if clicked via Slack button ---
+    # --- Update Slack message and disable button ---
+    # --- Update Slack message if button click used ---
     if slack_channel and message_ts:
-        client.chat_update(
-            channel=slack_channel,
-            ts=message_ts,
-            text=f"✅ *Completed!* {task_text}",
-            blocks=[{
-                "type": "section",
-                "text": {"type": "mrkdwn", "text": f"✅ *Completed!* {task_text}\n_Completed by <@{user_who_clicked}>_"}
-            }]
-        )
+        try:
+            client.chat_update(
+                channel=slack_channel,
+                ts=message_ts,
+                text=f"✅ *Completed!* {task_text}\n_Completed by <@{user_who_clicked}>_",
+                blocks=[]
+                  )
+        except Exception as e:
+            logging.exception("Slack update failed")
 
     # --- Notify creator if different ---
     if creator_id and creator_id != user_who_clicked:
@@ -563,18 +661,7 @@ def add_task(ack, body, client, logger):
             client.chat_postMessage(
                 channel=dm_channel,
                 text=msg_text,
-                blocks=[
-                    {"type": "section", "text": {"type": "mrkdwn", "text": msg_text}},
-                    {"type": "actions",
-                     "elements": [{
-                         "type": "button",
-                           "text": {"type": "plain_text", "text": "✅ Mark Complete"},
-                           "style": "primary",
-                           "action_id": "complete_task",
-                           "value": str(task_id)
-                           }]
-                    }
-                        ]
+               
              )
         except Exception as e:
             logger.exception(f"DM failed for {assigned_user}: {e}")
@@ -650,14 +737,17 @@ def list_tasks(ack, body, client, logger):
                 due_text = f" (Due: {due})"
 
         # --- Format assigned user correctly ---
-        assigned_text = ""
-        if assigned_to and assigned_to != creator:
+        
+        assigned_text-""
+       
+        if assigned_to and assigned_to !=creator:
             assigned_text = f" → Assigned to <@{assigned_to}>"
 
         # --- File attachment if exists ---
         file_text = f" 📎 <{file_url}|Attachment>" if file_url else ""
 
-        msg_lines.append(f"{status} *{text}* — ID: `{task_id}`{due_text}{assigned_text}{file_text}")
+        # msg_lines.append(f"{status} *{text}* — ID: `{task_id}`{due_text}{assigned_text}{file_text}")
+        msg_lines.append(f"{status}*{text}*-ID: `{task_id}`{due_text}{assigned_text}{file_text}")
 
     # --- Open DM and send message ---
     dm = client.conversations_open(users=user_id)
@@ -680,20 +770,20 @@ def complete_task_command(ack, body, client):
     client.chat_postMessage(channel=user_id, text=f"{'✅' if success else '⚠️'} {msg}")
 
 # ---------------- SLACK BUTTON HANDLER ----------------
-@slack_app.action("complete_task")
-def handle_complete_task(ack, body, client, logger):
-    ack()
-    action = body["actions"][0]
-    task_id = action.get("value")
-    user_id = body["user"]["id"]
-    channel_id = body["channel"]["id"]
-    message_ts = body["message"]["ts"]
+# @slack_app.action("complete_task")
+# def handle_complete_task(ack, body, client, logger):
+#     ack()
+#     action = body["actions"][0]
+#     task_id = action.get("value")
+#     user_id = body["user"]["id"]
+#     channel_id = body["channel"]["id"]
+#     message_ts = body["message"]["ts"]
 
-    if not task_id or not task_id.isdigit():
-        client.chat_postEphemeral(channel=channel_id, user=user_id, text="⚠️ Invalid task ID.")
-        return
+#     if not task_id or not task_id.isdigit():
+#         client.chat_postEphemeral(channel=channel_id, user=user_id, text="⚠️ Invalid task ID.")
+#         return
 
-    complete_task_logic(int(task_id), user_id, slack_channel=channel_id, message_ts=message_ts)
+#     complete_task_logic(int(task_id), user_id, slack_channel=channel_id, message_ts=message_ts)
 
 @slack_app.command("/mytasks")
 def mytasks(ack, body, client):
@@ -717,13 +807,7 @@ def dashboard(user_id):
 def api_tasks(user_id):
     return jsonify(get_tasks_for_user(user_id))
 
-# @flask_app.route("/api/complete_task", methods=["POST"])
-# def api_complete_task():
-#     data = request.get_json()
-#     task_id = data.get("task_id")
-#     complete_task_db(task_id)
-#     socketio.emit("task_update", {})
-#     return jsonify({"ok": True})
+
 @flask_app.route("/api/complete_task", methods=["POST"])
 def api_complete_task():
     data = request.get_json()
@@ -743,7 +827,7 @@ def api_complete_task():
 
 # ---------------- RUN ----------------
 def run_flask():
-    socketio.run(flask_app, host="0.0.0.0", port=4000)
+    socketio.run(flask_app, host="0.0.0.0", port=5000)
 
 if __name__ == "__main__":
     init_db()
