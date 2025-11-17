@@ -89,12 +89,14 @@
     }
 
     async function markComplete(id) {
-      await fetch("/api/complete_task", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ task_id: id, user_id: userId }),
-      });
-    }
+  await fetch("/api/complete_task", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ task_id: id, user_id: userId })
+  });
+  loadTasks(); // refresh table after marking complete
+}
+
 
     loadTasks();
   </script>
