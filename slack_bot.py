@@ -1,11 +1,4 @@
-import os
-import re
-import json
-import time
-import logging
-import threading
-import sqlite3
-import calendar
+import os, re, json, time, logging, threading, sqlite3, calendar, pytz
 from datetime import datetime, timedelta, timezone
 from flask import Flask, jsonify, send_from_directory, render_template_string, request
 from flask_socketio import SocketIO, emit
@@ -16,6 +9,7 @@ from dotenv import load_dotenv
 from dateparser.search import search_dates
 from google import genai
 from google.genai import types
+import pytz
 
 load_dotenv()
 
@@ -30,8 +24,6 @@ if not GEMINI_API_KEY:
 
 # --- Initialize Gemini client ---
 gemini_client = genai.Client(api_key=GEMINI_API_KEY)
-
-
 
 logging.basicConfig(level=logging.INFO)
 
@@ -77,14 +69,16 @@ def init_db():
         assigned_to TEXT,
         done INTEGER DEFAULT 0,
         completed_at TEXT,
+        remarks TEXT,  -- <--- NEW COLUMN
         FOREIGN KEY (task_id) REFERENCES tasks(id)
     )
     """)
 
+    
+
+
     conn.commit()
     conn.close()
-
-
 
 # ---------------- HELPERS ----------------
 user_cache = {}
@@ -119,7 +113,7 @@ def add_task_db(creator, assignees, text, due=None, file_url=None):
         INSERT INTO task_assignments (task_id, assigned_to)
         VALUES (?, ?)
         """, (task_id, user))
-
+    
     conn.commit()
     conn.close()
     return task_id
@@ -146,8 +140,9 @@ def get_task_db(task_id):
 def get_tasks_for_user(uid):
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
+    # Added ta.remarks to the SELECT statement
     c.execute("""
-        SELECT t.id, t.user_id, ta.assigned_to, t.text, t.due, ta.done, t.created_at
+        SELECT t.id, t.user_id, ta.assigned_to, t.text, t.due, ta.done, t.created_at, ta.remarks
         FROM task_assignments ta
         JOIN tasks t ON ta.task_id = t.id
         WHERE ta.assigned_to = ? OR t.user_id = ?
@@ -158,19 +153,20 @@ def get_tasks_for_user(uid):
     return [
         {
             "id": r[0],
+            "creator_id": r[1],
             "creator": get_username(r[1]),
-            "assigned_to": get_username(r[2]),
+            "assigned_to_id": r[2],          
+            "assigned_to_name": get_username(r[2]),
             "text": r[3],
             "due": r[4] or "-",
             "done": bool(r[5]),
-            "created_at": r[6] or "-"
+            "created_at": r[6] or "-",
+            "remarks": r[7] or ""  # <--- NEW: Include remarks in response
         }
         for r in rows
     ]
 
 
-
-# 
 
 def extract_due_date(task_text):
     """
@@ -321,7 +317,6 @@ def reminder_loop():
       - 30-min before due
     Avoids duplicate reminders using sent_reminders set.
     """
-    import pytz
     tz = pytz.timezone("Asia/Kolkata")  # IST
 
     sent_reminders = set()  # format: f"{task_id}:{assigned_to}:{type}:{date}"
@@ -406,95 +401,9 @@ def reminder_loop():
         time.sleep(60)  # run every minute
 
 
-
-# # ---------------- COMMON COMPLETION LOGIC ----------------
-
-# def complete_task_logic(task_id, user_who_clicked, slack_channel=None, message_ts=None):
-#     """
-#     Marks a task complete. Either an assigned user or the creator can mark complete.
-#     Updates the same task row / assignment row without duplicates.
-#     Returns (success, message)
-#     """
-#     task = get_task_db(task_id)
-#     if not task:
-#         return False, "Task not found."
-
-#     task_text = task[2] or "[No description]"  # task[2] = text
-#     creator_id = task[1]  # task[1] = user_id (creator)
-
-#     conn = sqlite3.connect(DB_FILE)
-#     c = conn.cursor()
-
-#     # --- Check if user is assigned ---
-#     c.execute(
-#         "SELECT id, done FROM task_assignments WHERE task_id=? AND assigned_to=?",
-#         (task_id, user_who_clicked)
-#     )
-#     assignment = c.fetchone()
-
-#     if assignment:
-#         assignment_id, done = assignment
-#         if done:
-#             conn.close()
-#             return False, "Task already completed."
-#         # Mark assignment as done
-#         c.execute(
-#             "UPDATE task_assignments SET done=1, completed_at=? WHERE id=?",
-#             (datetime.now().isoformat(), assignment_id)
-#         )
-#     elif user_who_clicked == creator_id:
-#         # Creator is marking complete
-#         # Mark all assignments as done
-#         c.execute(
-#             "UPDATE task_assignments SET done=1, completed_at=? WHERE task_id=? AND done=0",
-#             (datetime.now().isoformat(), task_id)
-#         )
-#     else:
-#         conn.close()
-#         return False, "You are not allowed to complete this task."
-
-#     # --- Check if all assignments are done to mark main task as done ---
-#     c.execute("SELECT COUNT(*) FROM task_assignments WHERE task_id=? AND done=0", (task_id,))
-#     remaining = c.fetchone()[0]
-#     if remaining == 0:
-#         c.execute("UPDATE tasks SET done=1, completed_at=? WHERE id=?",
-#                   (datetime.now().isoformat(), task_id))
-
-#     conn.commit()
-#     conn.close()
-
-#     # Refresh dashboard
-#     socketio.emit("task_update", {})
-
-#     # --- Update Slack message if clicked via Slack button ---
-#     if slack_channel and message_ts:
-#         client.chat_update(
-#             channel=slack_channel,
-#             ts=message_ts,
-#             text=f"✅ *Completed!* {task_text}",
-#             blocks=[{
-#                 "type": "section",
-#                 "text": {"type": "mrkdwn", "text": f"✅ *Completed!* {task_text}\n_Completed by <@{user_who_clicked}>_"}
-#             }]
-#         )
-
-#     # --- Notify creator if different ---
-#     if creator_id and creator_id != user_who_clicked:
-#         try:
-#             dm = client.conversations_open(users=creator_id)
-#             dm_channel = dm["channel"]["id"]
-#             client.chat_postMessage(
-#                 channel=dm_channel,
-#                 text=f"🎉 <@{user_who_clicked}> completed the task: *{task_text}* (ID: {task_id})"
-#             )
-#         except Exception:
-#             logging.exception("Notify creator failed")
-
-#     return True, f"🎉 <@{user_who_clicked}> completed the task: *{task_text}* (ID: {task_id})"
-def complete_task_logic(task_id, user_who_clicked, slack_channel=None, message_ts=None):
+def complete_task_logic(task_id, user_who_clicked, slack_channel=None, message_ts=None, note=""):
     """
-    Marks a task complete. Either an assigned user or the creator can mark complete.
-    Updates Slack button to disabled in real-time.
+    Marks a task complete and saves remarks with the user's signature.
     """
     task = get_task_db(task_id)
     if not task:
@@ -502,6 +411,15 @@ def complete_task_logic(task_id, user_who_clicked, slack_channel=None, message_t
 
     task_text = task[2] or "[No description]"
     creator_id = task[1]
+
+    # --- NEW: Get the username of the person completing the task ---
+    user_name = get_username(user_who_clicked)
+    
+    # --- NEW: Format the note with the signature ---
+    final_remark = ""
+    if note:
+        # Appends the name to the note
+        final_remark = f"{note}\n\n— Added by @{user_name}"
 
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
@@ -513,20 +431,24 @@ def complete_task_logic(task_id, user_who_clicked, slack_channel=None, message_t
     )
     assignment = c.fetchone()
 
+    timestamp = datetime.now().isoformat()
+
     if assignment:
         assignment_id, done = assignment
         if done:
             conn.close()
             return False, "Task already completed."
+        
+        # Save final_remark instead of just note
         c.execute(
-            "UPDATE task_assignments SET done=1, completed_at=? WHERE id=?",
-            (datetime.now().isoformat(), assignment_id)
+            "UPDATE task_assignments SET done=1, completed_at=?, remarks=? WHERE id=?",
+            (timestamp, final_remark, assignment_id)
         )
     elif user_who_clicked == creator_id:
         # Creator marks complete: mark all assignments done
         c.execute(
-            "UPDATE task_assignments SET done=1, completed_at=? WHERE task_id=? AND done=0",
-            (datetime.now().isoformat(), task_id)
+            "UPDATE task_assignments SET done=1, completed_at=?, remarks=? WHERE task_id=? AND done=0",
+            (timestamp, final_remark, task_id)
         )
     else:
         conn.close()
@@ -537,16 +459,15 @@ def complete_task_logic(task_id, user_who_clicked, slack_channel=None, message_t
     remaining = c.fetchone()[0]
     if remaining == 0:
         c.execute("UPDATE tasks SET done=1, completed_at=? WHERE id=?",
-                  (datetime.now().isoformat(), task_id))
+                  (timestamp, task_id))
 
     conn.commit()
     conn.close()
 
+ 
     # Refresh dashboard
     socketio.emit("task_update", {})
 
-    # --- Update Slack message and disable button ---
-    # --- Update Slack message if button click used ---
     if slack_channel and message_ts:
         try:
             client.chat_update(
@@ -594,19 +515,8 @@ def add_task(ack, body, client, logger):
     assigned_to_user_ids = mentions if mentions else [user_id_invoker]
     task_text = re.sub(r"<@([A-Z0-9]+)(?:\|[^>]+)?>", "", raw_text).strip()
 
-    
-    # --- Extract due date ---
     date_str, time_str, day_str, task_text = extract_due_date(task_text)
 
-    # print("------------------------------------------------")
-    # print(" Extractor returned:")
-    # print(f"  Task text : {task_text}")
-    # print(f"  Date      : {date_str}")
-    # print(f"  Time      : {time_str}")
-    # print(f"  Day       : {day_str}")
-    # print("------------------------------------------------")
-
-    # --- Build due datetime ---
     due = None
     if date_str and time_str:
         try:
@@ -634,18 +544,10 @@ def add_task(ack, body, client, logger):
     else:
         due_str = "No due time"
     
-    # assigned_dt=datetime.fromisoformat(datetime.now().isoformat())
-    # assigned_str=assigned_dt.strftime("%a, %b %d at %I:%M %p")
-    # --- Send confirmation to Slack ---
     client.chat_postMessage(
         channel=user_id_invoker,
         text=f"✅ Task added: *{task_text}* (id: {task_id})\n⏰ *Due:* {due_str}"
-         
-           
     )
-
-
-    
     
     # DM assigned user
     for assigned_user in assigned_to_user_ids:
@@ -677,82 +579,258 @@ def delete_task(ack, body, client, logger):
         return
 
     task_id = int(text)
-    task = get_task_db(task_id)
-    if not task:
-        client.chat_postMessage(channel=user_id, text=f"❌ No task found with ID {task_id}.")
+
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute("SELECT user_id FROM tasks WHERE id=?", (task_id,))
+    row = c.fetchone()
+    conn.close()
+
+    if not row:
+        client.chat_postMessage(channel=user_id, text="❌ Task not found.")
         return
 
-    creator, assigned = task[1], task[2]
-    if user_id not in (creator, assigned):
-        client.chat_postMessage(channel=user_id, text="🚫 You’re not allowed to delete this task.")
-        return
+    creator_id = row[0]
 
-    # delete it
+    # --- STRICT SECURITY CHECK ---
+    if user_id != creator_id:
+        client.chat_postMessage(
+            channel=user_id, 
+            text="🚫 Permission Denied: Only the creator can delete this task."
+        )
+        return
+    # -----------------------------
+
+    # Proceed with deletion
+    delete_task_internal(task_id, user_id, client, logger)
+    client.chat_postMessage(channel=user_id, text=f"🗑️ Task {task_id} deleted successfully.")
+
+def delete_task_internal(task_id, user_id, client, logger):
+    # 1. Fetch task info
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute("SELECT id, user_id, text FROM tasks WHERE id=?", (task_id,))
+    row = c.fetchone()
+
+    if not row:
+        conn.close()
+        logger.error(f"Delete internal failed: Task {task_id} not found")
+        return False
+
+    _, creator_id, task_text = row
+
+    # 2. Fetch assignees
+    c.execute("SELECT assigned_to FROM task_assignments WHERE task_id=?", (task_id,))
+    assignees = [r[0] for r in c.fetchall()]
+
+    conn.close()
+
+    # 3. Permission check
+    if user_id != creator_id and user_id not in assignees:
+        logger.error("Permission denied for delete (internal call).")
+        return False
+
+    # 4. Delete task + its assignments
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
     c.execute("DELETE FROM tasks WHERE id=?", (task_id,))
+    c.execute("DELETE FROM task_assignments WHERE task_id=?", (task_id,))
     conn.commit()
     conn.close()
 
-    client.chat_postMessage(channel=user_id, text=f"🗑️ Task {task_id} deleted successfully.")
+    # 5. DM creator (if different from user deleting)
+    if creator_id != user_id:
+        try:
+            dm = client.conversations_open(users=creator_id)
+            dm_channel = dm["channel"]["id"]
+            msg = (
+                f"❗ *Task Deleted*\n"
+                f"<@{user_id}> deleted your task:\n"
+                f"➡️ *{task_text}*"
+            )
+            client.chat_postMessage(channel=dm_channel, text=msg)
+        except Exception as e:
+            logger.exception(f"DM to creator failed: {e}")
+
+    # 6. DM assignees
+    for assigned_user in assignees:
+        if assigned_user == user_id:
+            continue  # skip the user who deleted
+
+        try:
+            dm = client.conversations_open(users=assigned_user)
+            dm_channel = dm["channel"]["id"]
+            msg = (
+                f"❗ *Assigned Task Deleted*\n"
+                f"The task assigned to you was deleted:\n"
+                f"➡️ *{task_text}*\n"
+                f"Deleted by: <@{user_id}>"
+            )
+            client.chat_postMessage(channel=dm_channel, text=msg)
+        except Exception as e:
+            logger.exception(f"DM to assignee failed: {e}")
+
+    return True
 
 
-@slack_app.command("/listtasks")
-def list_tasks(ack, body, client, logger):
-    ack()
-    user_id = body["user_id"]
 
+#editing functionality
+def edit_task(task_id, new_assignees, editor_user_id, client, logger, new_text=None, new_due=None):
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
 
-    # --- Fetch tasks for user considering two-table schema ---
-    c.execute("""
-        SELECT t.id, t.text, ta.assigned_to, t.user_id, ta.done, t.due, t.file_url
-        FROM tasks t
-        LEFT JOIN task_assignments ta ON t.id = ta.task_id
-        WHERE t.user_id = ? OR ta.assigned_to = ?
-        ORDER BY t.id DESC
-    """, (user_id, user_id))
-    rows = c.fetchall()
+    # 1. Fetch task details AND creator_id
+    c.execute("SELECT user_id, text, due, file_url FROM tasks WHERE id=?", (task_id,))
+    row = c.fetchone()
+
+    if not row:
+        conn.close()
+        return {"success": False, "error": "Task not found"}
+
+    creator_id, old_text, old_due, file_url = row
     conn.close()
 
-    if not rows:
-        dm = client.conversations_open(users=user_id)
-        dm_channel = dm["channel"]["id"]
-        client.chat_postMessage(channel=dm_channel, text="📭 You have no tasks yet.")
-        return
+    # --- SECURITY CHECK ---
+    if creator_id != editor_user_id:
+        return {"success": False, "error": "Permission Denied: Only the task creator can edit this task."}
+    # ----------------------
 
-    msg_lines = []
-    for row in rows:
-        task_id, text, assigned_to, creator, done, due, file_url = row
-        status = "✅" if done else "🕒"
+    # --- APPLY EDITS (use new values if provided, otherwise keep old ones) ---
+    updated_text = new_text if new_text else old_text
+    updated_due = new_due if new_due else old_due
 
-        # --- Format due date nicely ---
-        due_text = ""
-        if due and isinstance(due, str):
-            try:
-                due_dt = datetime.fromisoformat(due)
-                due_text = f" (Due: {due_dt.strftime('%a, %b %d at %I:%M %p')})"
-            except Exception:
-                due_text = f" (Due: {due})"
+    # --- 2. CREATE NEW TASK WITH UPDATED FIELDS ---
+    new_task_id = add_task_db(
+        creator=editor_user_id,
+        assignees=new_assignees,
+        text=updated_text,
+        due=updated_due,
+        file_url=file_url
+    )
 
-        # --- Format assigned user correctly ---
+    # --- 3. Notify assignees ---
+    for assigned_user in new_assignees:
+        if assigned_user == editor_user_id:
+            continue
+
+        try:
+            dm = client.conversations_open(users=assigned_user)
+            dm_channel = dm["channel"]["id"]
+
+            msg_text = (
+                f"🔔 *Updated Task Assigned to You!*\n"
+                f"<@{editor_user_id}> updated a task and assigned it to you:\n\n"
+                f"*Task:* {updated_text}\n"
+                f"*Due:* {updated_due or 'No due date'}\n"
+                f"🆕 *Task ID:* {new_task_id}"
+            )
+
+            client.chat_postMessage(channel=dm_channel, text=msg_text)
+
+        except Exception as e:
+            logger.exception(f"DM failed for new assignee: {e}")
+
+    # --- 4. DELETE OLD TASK ---
+    try:
+        delete_task_internal(task_id, editor_user_id, client, logger)
+    except Exception as e:
+        logger.exception("Delete inside edit failed:", e)
+
+    # --- 5. Notify the editor (creator) ---
+    try:
+        client.chat_postMessage(
+            channel=editor_user_id,
+            text=(
+                f"✏️ *Task Updated Successfully*\n"
+                f"Old Task ID: {task_id}\n"
+                f"New Task ID: {new_task_id}"
+            )
+        )
+    except Exception as e:
+        logger.exception("Creator notification failed:", e)
+
+    return {"success": True, "new_task_id": new_task_id}
+
+@flask_app.route("/api/slack_users")
+def get_slack_users():
+    import requests, os
+
+    SLACK_BOT_TOKEN = os.getenv("SLACK_BOT_TOKEN")
+
+    url = "https://slack.com/api/users.list"
+    headers = {"Authorization": f"Bearer {SLACK_BOT_TOKEN}"}
+
+    resp = requests.get(url, headers=headers).json()
+
+    users = []
+    for member in resp.get("members", []):
+        if member.get("deleted") or member.get("is_bot") or member.get("id") == "USLACKBOT":
+            continue
+
+        users.append({
+            "id": member["id"],
+            "name": member["profile"].get("real_name") or member.get("name")
+        })
+
+    return users
+
+
+# @slack_app.command("/listtasks")
+# def list_tasks(ack, body, client, logger):
+#     ack()
+#     user_id = body["user_id"]
+
+#     conn = sqlite3.connect(DB_FILE)
+#     c = conn.cursor()
+
+#     # --- Fetch tasks for user considering two-table schema ---
+#     c.execute("""
+#         SELECT t.id, t.text, ta.assigned_to, t.user_id, ta.done, t.due, t.file_url
+#         FROM tasks t
+#         LEFT JOIN task_assignments ta ON t.id = ta.task_id
+#         WHERE t.user_id = ? OR ta.assigned_to = ?
+#         ORDER BY t.id DESC
+#     """, (user_id, user_id))
+#     rows = c.fetchall()
+#     conn.close()
+
+#     if not rows:
+#         dm = client.conversations_open(users=user_id)
+#         dm_channel = dm["channel"]["id"]
+#         client.chat_postMessage(channel=dm_channel, text="📭 You have no tasks yet.")
+#         return
+
+#     msg_lines = []
+#     for row in rows:
+#         task_id, text, assigned_to, creator, done, due, file_url = row
+#         status = "✅" if done else "🕒"
+
+#         # --- Format due date nicely ---
+#         due_text = ""
+#         if due and isinstance(due, str):
+#             try:
+#                 due_dt = datetime.fromisoformat(due)
+#                 due_text = f" (Due: {due_dt.strftime('%a, %b %d at %I:%M %p')})"
+#             except Exception:
+#                 due_text = f" (Due: {due})"
+
+#         # --- Format assigned user correctly ---
         
-        assigned_text-""
+#         assigned_text=""
        
-        if assigned_to and assigned_to !=creator:
-            assigned_text = f" → Assigned to <@{assigned_to}>"
+#         if assigned_to and assigned_to !=creator:
+#             assigned_text = f" → Assigned to <@{assigned_to}>"
 
-        # --- File attachment if exists ---
-        file_text = f" 📎 <{file_url}|Attachment>" if file_url else ""
+#         # --- File attachment if exists ---
+#         file_text = f" 📎 <{file_url}|Attachment>" if file_url else ""
 
-        # msg_lines.append(f"{status} *{text}* — ID: `{task_id}`{due_text}{assigned_text}{file_text}")
-        msg_lines.append(f"{status}*{text}*-ID: `{task_id}`{due_text}{assigned_text}{file_text}")
+#         # msg_lines.append(f"{status} *{text}* — ID: `{task_id}`{due_text}{assigned_text}{file_text}")
+#         msg_lines.append(f"{status}*{text}*-ID: `{task_id}`{due_text}{assigned_text}{file_text}")
 
-    # --- Open DM and send message ---
-    dm = client.conversations_open(users=user_id)
-    dm_channel = dm["channel"]["id"]
-    client.chat_postMessage(channel=dm_channel, text="🧾 *Your Tasks:*\n" + "\n".join(msg_lines))
+#     # --- Open DM and send message ---
+#     dm = client.conversations_open(users=user_id)
+#     dm_channel = dm["channel"]["id"]
+#     client.chat_postMessage(channel=dm_channel, text="🧾 *Your Tasks:*\n" + "\n".join(msg_lines))
 
 
 @slack_app.command("/completetasknew")
@@ -769,21 +847,6 @@ def complete_task_command(ack, body, client):
     success, msg = complete_task_logic(task_id, user_id)
     client.chat_postMessage(channel=user_id, text=f"{'✅' if success else '⚠️'} {msg}")
 
-# ---------------- SLACK BUTTON HANDLER ----------------
-# @slack_app.action("complete_task")
-# def handle_complete_task(ack, body, client, logger):
-#     ack()
-#     action = body["actions"][0]
-#     task_id = action.get("value")
-#     user_id = body["user"]["id"]
-#     channel_id = body["channel"]["id"]
-#     message_ts = body["message"]["ts"]
-
-#     if not task_id or not task_id.isdigit():
-#         client.chat_postEphemeral(channel=channel_id, user=user_id, text="⚠️ Invalid task ID.")
-#         return
-
-#     complete_task_logic(int(task_id), user_id, slack_channel=channel_id, message_ts=message_ts)
 
 @slack_app.command("/mytasks")
 def mytasks(ack, body, client):
@@ -807,24 +870,113 @@ def dashboard(user_id):
 def api_tasks(user_id):
     return jsonify(get_tasks_for_user(user_id))
 
+@flask_app.route("/api/edit_task", methods=["POST"]) # ✅ Added POST method
+def api_edit_task():
+    data = request.get_json()
 
+    task_id = data["task_id"]
+    new_text = data["new_text"] # <-- You must add this
+    new_due = data["new_due"]
+    new_assignees = data["new_assignees"] # Expecting a list, e.g. ["U12345"]
+    editor_user_id = data["editor_user_id"]
+
+    # Create a logger for this function
+    local_logger = logging.getLogger("edit_task_api")
+
+    result = edit_task(
+        task_id,
+        new_assignees,
+        editor_user_id,
+        client,
+        local_logger,
+         new_text=new_text,
+        new_due=new_due
+    )
+
+    return jsonify(result)
+
+# @flask_app.route("/api/complete_task", methods=["POST"])
+# def api_complete_task():
+#     data = request.get_json()
+#     task_id = data.get("task_id")
+#     user_id = data.get("user_id")
+#     # note=data.get("note")
+
+#     if not task_id or not user_id:
+#         return jsonify({"success": False, "message": "Missing task_id or user_id"}), 400
+
+#     try:
+#         success, message = complete_task_logic(task_id, user_id)
+#         return jsonify({"success": success, "message": message})
+#     except Exception as e:
+#         logging.exception("Error in completing task")
+#         return jsonify({"success": False, "message": str(e)}), 500
 @flask_app.route("/api/complete_task", methods=["POST"])
 def api_complete_task():
     data = request.get_json()
     task_id = data.get("task_id")
     user_id = data.get("user_id")
-
+    note = data.get("note", "") # Get note
+    
     if not task_id or not user_id:
         return jsonify({"success": False, "message": "Missing task_id or user_id"}), 400
 
     try:
-        success, message = complete_task_logic(task_id, user_id)
+        # ✅ Pass note to logic
+        success, message = complete_task_logic(task_id, user_id, note=note)
         return jsonify({"success": success, "message": message})
     except Exception as e:
         logging.exception("Error in completing task")
         return jsonify({"success": False, "message": str(e)}), 500
 
 
+
+@flask_app.route("/api/delete_task", methods=["POST"])
+def api_delete_task():
+    data = request.get_json()
+    task_id = data.get("task_id")
+    user_id = data.get("user_id")
+
+    if task_id is None or user_id is None:
+        return jsonify({"success": False, "error": "Missing task_id or user_id"}), 400
+
+    try:
+        task_id = int(task_id) # Ensure this is an int
+    except ValueError:
+        return jsonify({"success": False, "error": "Invalid task_id"}), 400
+
+    # 1. Verify User ID vs Creator ID before proceeding
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute("SELECT user_id, text FROM tasks WHERE id=?", (task_id,))
+    row = c.fetchone()
+    conn.close()
+
+    if not row:
+        return jsonify({"success": False, "error": "Task not found"}), 404
+
+    creator_id, task_text = row
+
+    # Strict check: ensure strings match (strip whitespace to be safe)
+    if str(user_id).strip() != str(creator_id).strip():
+        return jsonify({"success": False, "error": "Permission denied: Only the creator can delete this task."}), 403
+
+    logger = logging.getLogger("delete_api")
+    
+    try:
+        # We pass the validated inputs to the internal function
+        deleted = delete_task_internal(task_id, user_id, client, logger)
+        
+        if deleted:
+            # Broadcast update
+            socketio.emit("task_update", {})
+            return jsonify({"success": True})
+        else:
+            return jsonify({"success": False, "error": "Internal deletion logic failed"}), 500
+
+    except Exception as e:
+        logger.exception(f"Exception in delete_task_internal for task {task_id}")
+        return jsonify({"success": False, "error": f"Server error: {str(e)}"}), 500
 # ---------------- RUN ----------------
 def run_flask():
     socketio.run(flask_app, host="0.0.0.0", port=5000)

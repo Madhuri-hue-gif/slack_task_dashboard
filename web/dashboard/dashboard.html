@@ -3,21 +3,138 @@
 <head>
   <meta charset="UTF-8">
   <title>Task Dashboard</title>
-<link rel="stylesheet" href="/style/style.css">
+  <!-- Simple inline CSS for better visuals -->
 
+  <link rel="stylesheet" href="/style/style.css">
   <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
 </head>
 <body>
+
   <h2>Task Dashboard</h2>
-  <p>Your Slack ID: <b>{{ user_id }}</b></p>
-  <div id="tasks"></div>
+  <p>Logged in as: <b>{{ user_id }}</b></p>
+
+  <div style="margin-bottom: 20px; display: flex; gap:15px;">
+   <!--Filter by assignee -->
+    <!-- NEW SEARCH INPUT -->
+<input type="text" 
+       id="filterAssigned" 
+       placeholder="🔍 Search Assignee..." 
+       oninput="loadTasks()" 
+       style="padding: 8px; border: 1px solid #ccc; border-radius: 4px; width: 200px;">
+
+      <!--Filter by status -->
+    <select id="filterStatus" onchange="loadTasks()">
+      <option value="">Status (ALL)</option>
+      <option value="pending">Pending</option>
+      <option value="done">Completed</option>
+    </select>
+     
+      <!--Filter by due -->
+      <select id="filterDue" onchange="loadTasks()">
+        <option value="">Due(All)</option>
+        <option value="today">Due Today</option>
+       <option value="tommorow">Due Tommorow</option>
+       <option value="overdue">Overdue</option>
+    </select>
+
+
+
+  </div>
+  <div id="tasks">Loading tasks...</div>
+  
+  <!-- EDIT MODAL -->
+<!-- EDIT MODAL -->
+  <div id="editModal" class="modal">
+    <div class="modal-content">
+      <h3>✏️ Reassign Task</h3>
+      <p><b>Task ID:</b> <span id="editTaskId"></span></p>
+
+      <label><b>Task Description:</b></label>
+      <input id="editText" type="text" style="width:100%; padding:8px; margin-bottom:10px;">
+
+      <label><b>Due Date:</b></label>
+      <input id="editDue" type="date" style="width:100%; padding:8px; margin-bottom:15px;">
+
+      <label for="editAssignees"><b>Assign to New User:</b></label>
+      <select id="editAssignees">
+        <option value="">Loading users...</option>
+      </select>
+      
+      <p style="font-size: 12px; color: #666; margin-top:5px;">
+        * This will delete the current task and create a new one.
+      </p>
+
+      <button class="save" onclick="saveEditTask()">✅ Save & Reassign</button>
+      <button class="cancel" onclick="closeEditModal()">❌ Cancel</button>
+    </div>
+  </div>
+
+  <!-- DELETE CONFIRMATION MODAL -->
+  <div id="deleteModal" class="modal">
+    <div class="modal-content">
+      <h3>🗑️ Delete Task</h3>
+      <p>Are you sure you want to delete this task?</p>
+      <p><b>Task ID:</b> <span id="deleteTaskId"></span></p>
+
+      <button class="delete" onclick="confirmDeleteTask()" style="width:100%; margin-top:10px;">Yes, Delete</button>
+      <button class="cancel" onclick="closeDeleteModal()" style="width:100%; margin-top:5px;">Cancel</button>
+    </div>
+  </div>
+
+  <!--NOTE MODEL-->
+
+<!-- COMPLETE TASK MODAL -->
+<div id="completeModal" class="modal">
+  <div class="modal-content">
+    <h3>✅ Complete Task</h3>
+    <p><b>Task ID:</b> <span id="completeTaskId"></span></p>
+
+    <label><b>Add a Note / Remark (Optional):</b></label>
+    <textarea id="completeNote" rows="3" placeholder="e.g. Done, sent email..." style="width:100%; padding:8px; margin-bottom:15px; border-radius:4px; border:1px solid #ccc; font-family: sans-serif;"></textarea>
+
+    <button class="complete" onclick="submitCompleteTask()" style="width:100%;">Complete Task</button>
+    <button class="cancel" onclick="closeCompleteModal()" style="width:100%; margin-top:5px;">Cancel</button>
+  </div>
+</div>
+
+<!-- VIEW REMARKS MODAL -->
+<div id="remarksModal" class="modal">
+  <div class="modal-content">
+    <h3>📝 Task Remarks</h3>
+    <div style="background: #f8f9fa; padding: 10px; border: 1px solid #ddd; border-radius: 4px; min-height: 60px;">
+      <p id="remarksText" style="margin: 0; white-space: pre-wrap; color: #333;"></p>
+    </div>
+    <br>
+    <button class="cancel" onclick="closeRemarksModal()">Close</button>
+  </div>
+</div>
+
+
+
+
+
+
+
+
+
+
+
+
+
 
   <script>
     const userId = "{{ user_id }}";
     const socket = io();
+    
     socket.on("task_update", loadTasks);
 
-    function formatDateTime(isoStr) {
+    let availableUsers = [];
+    let currentDeleteTaskId = null;
+    let currentEditTaskId = null;
+
+
+
+     function formatDateTime(isoStr) {
       if (!isoStr || isoStr === "-") return "-";
       const dt = new Date(isoStr);
       if (isNaN(dt.getTime())) return "-";
@@ -33,10 +150,149 @@
       return `${day}/${month}/${year} ${hours}:${minutes} ${ampm}`;
     }
 
+
+
+    // --- Modal Functions ---
+    function openDeleteModal(taskId) {
+      console.log("Opening delete modal for:", taskId); // Debugging
+      currentDeleteTaskId = taskId;
+      document.getElementById("deleteTaskId").textContent = taskId;
+      document.getElementById("deleteModal").style.display = "flex";
+    }
+
+    function closeDeleteModal() {
+      document.getElementById("deleteModal").style.display = "none";
+      currentDeleteTaskId = null;
+    }
+
+    function openEditModal(taskId, currentAssigneeId) {
+      currentEditTaskId = taskId;
+      document.getElementById("editTaskId").textContent = taskId;
+      const select = document.getElementById("editAssignees");
+      select.value = currentAssigneeId || ""; 
+      document.getElementById("editModal").style.display = "flex";
+    }
+
+    function closeEditModal() {
+      document.getElementById("editModal").style.display = "none";
+      currentEditTaskId = null;
+    }
+    
+// --Notes functions ----
+    // --- COMPLETE MODAL VARIABLES ---
+let currentCompleteTaskId = null;
+
+// --- FUNCTIONS ---
+
+function openCompleteModal(taskId) {
+  currentCompleteTaskId = taskId;
+  document.getElementById("completeTaskId").textContent = taskId;
+  
+  // Clear previous notes
+  document.getElementById("completeNote").value = ""; 
+  
+  document.getElementById("completeModal").style.display = "flex";
+}
+
+function closeCompleteModal() {
+  document.getElementById("completeModal").style.display = "none";
+  currentCompleteTaskId = null;
+}
+
+async function submitCompleteTask() {
+  if (!currentCompleteTaskId) return;
+
+  // 1. Get the note
+  let note = document.getElementById("completeNote").value.trim();
+  
+  // 2. LOG TO CONSOLE (As requested)
+  console.log("📝 User Note:", note === "" ? "NULL" : note);
+
+  try {
+    // 3. Send to Backend
+    const response = await fetch("/api/complete_task", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ 
+        task_id: currentCompleteTaskId, 
+        user_id: userId,
+        note: note // Sending the note
+      })
+    });
+
+    const result = await response.json();
+
+    if (result.success) {
+      closeCompleteModal();
+      loadTasks(); // Refresh table
+    } else {
+      alert("Error: " + result.message);
+    }
+  } catch (e) {
+    console.error("Completion failed", e);
+  }
+}
+    // --- API Calls ---
+    async function loadSlackUsers() {
+      try {
+        const response = await fetch('/api/slack_users');
+        availableUsers = await response.json();
+        
+        const select = document.getElementById("editAssignees");
+        // const filterAssigned = document.getElementById("filterAssigned");
+
+        availableUsers.forEach(user => {
+          // Fill Edit Dropdown
+          const option = document.createElement("option");
+          option.value = user.id;
+          option.textContent = user.name;
+          select.appendChild(option);
+
+          // Fill Filter Dropdown
+          // let opt = document.createElement("option");
+          // opt.value = user.name;
+          // opt.textContent = user.name;
+          // filterAssigned.appendChild(opt);
+        });
+      } catch (error) {
+        console.error("Failed to load users", error);
+      }
+    }
+
+   // We will store tasks globally to access remarks easily without quote escaping issues
+    let globalTasks = {}; 
+
     function loadTasks() {
       fetch(`/api/tasks/${userId}`)
         .then(r => r.json())
         .then(tasks => {
+          
+          // Store tasks for easy lookup later
+          globalTasks = {};
+          tasks.forEach(t => globalTasks[t.id] = t);
+
+          // ... (Keep your existing filter logic here) ...
+          const assignedFilter = document.getElementById("filterAssigned").value.toLowerCase();
+          const statusFilter = document.getElementById("filterStatus").value;
+          const dueFilter = document.getElementById("filterDue").value;
+          const today = new Date();
+          const tommorow = new Date();
+          tommorow.setDate(today.getDate()+1);
+
+          tasks = tasks.filter(t => {
+             if(assignedFilter && (!t.assigned_to_name || !t.assigned_to_name.toLowerCase().includes(assignedFilter))) return false;
+             if(statusFilter === "done" && !t.done) return false;
+             if(statusFilter === "pending" && t.done) return false;
+             if(t.due && t.due !== "-"){
+               let dueDate=new Date(t.due);
+               if (dueFilter === "today" && dueDate.toDateString()!== today.toDateString()) return false;
+               if (dueFilter === "tommorow" &&  dueDate.toDateString()!==tommorow.toDateString()) return false;
+               if (dueFilter === "overdue" && dueDate < today && !t.done) return false;
+             }
+             return true;
+          });
+          // ... (End filter logic) ...
+
           if (!tasks.length) {
             document.getElementById("tasks").innerHTML = "<p>No tasks found.</p>";
             return;
@@ -46,58 +302,121 @@
             <table>
               <thead>
                 <tr>
-                  <th>Sr. No.</th>
-                  <th>Task ID</th>
-                  <th>Creator</th>
-                  <th>Assigned To</th>
-                  <th>Assigned Date</th>
-                  <th>Task</th>
-                  <th>Status</th>
-                  <th>Due</th>
-                  <th>Action</th>
+                  <th>ID</th><th>Creator</th><th>Assigned To</th><th>Task</th><th>Status</th><th>Due</th><th>Action</th>
                 </tr>
               </thead>
               <tbody>
-                ${tasks.map((t, index) => `
-                  <tr>
-                    <td>${index + 1}</td>
+                ${tasks.map((t) => {
+                  const isCreator = (t.creator_id === userId);
+                  
+                  // Action buttons logic
+                  let actionButtons = "";
+
+                  if (!t.done) {
+                    // Pending Task Actions
+                    actionButtons += `<button class="complete" onclick="openCompleteModal(${t.id})">✓</button> `;
+                    if (isCreator) {
+                       actionButtons += `<button class="edit" onclick="openEditModal(${t.id}, '${t.assigned_to_id || ''}')">✎</button>
+                                         <button class="delete" onclick="openDeleteModal(${t.id})">🗑️</button>`;
+                    }
+                  } else {
+                    // Completed Task Actions -> Show Remarks Button
+                    actionButtons += `<button class="view-remarks" onclick="openRemarksModal(${t.id})">📜 View Note</button>`;
+                   
+                  }
+
+                  return `
+                  <tr class="${t.done ? 'completed-row': ''}">
                     <td>${t.id}</td>
                     <td>${t.creator}</td>
-                    <td>${t.assigned_to}</td>
-                    <td>${formatDateTime(t.created_at)}</td>
+                    <td>${t.assigned_to_name}</td>
                     <td>${t.text}</td>
-                    <td>${
-                      t.done
-                        ? '<span class="done">Done</span>'
-                        : '<span class="pending">Pending</span>'
-                    }</td>
+                    <td>${t.done ? '<span class="done">Done</span>' : '<span class="pending">Pending</span>'}</td>
                     <td>${formatDateTime(t.due)}</td>
-                    <td>${
-                      !t.done
-                        ? `<button onclick="markComplete(${t.id})">Complete</button>`
-                        : ""
-                    }</td>
+                    <td>
+                      ${actionButtons}
+                    </td>
                   </tr>
-                `).join("")}
+                `}).join("")}
               </tbody>
             </table>`;
           document.getElementById("tasks").innerHTML = html;
         })
-        .catch(err => {
-          console.error("Error loading tasks:", err);
-        });
+        .catch(err => console.error("Error loading tasks:", err));
     }
 
+    // --- NEW REMARKS FUNCTIONS ---
+    function openRemarksModal(taskId) {
+      const task = globalTasks[taskId];
+      const remarks = task && task.remarks ? task.remarks : "No remarks provided.";
+      
+      document.getElementById("remarksText").textContent = remarks;
+      document.getElementById("remarksModal").style.display = "flex";
+    }
+
+    function closeRemarksModal() {
+      document.getElementById("remarksModal").style.display = "none";
+    }
     async function markComplete(id) {
-  await fetch("/api/complete_task", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ task_id: id, user_id: userId })
-  });
-  loadTasks(); // refresh table after marking complete
-}
+      await fetch("/api/complete_task", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ task_id: id, user_id: userId })
+      });
+      loadTasks();
+    }
 
+    async function saveEditTask() {
+       // ... (Your existing edit logic) ...
+       const select = document.getElementById("editAssignees");
+       const newAssigneeId = select.value;
+       if (!newAssigneeId) { alert("Select user"); return; }
+       
+       await fetch("/api/edit_task", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            task_id: currentEditTaskId,
+            new_assignees: [newAssigneeId],
+            new_text: document.getElementById("editText").value,
+            new_due: document.getElementById("editDue").value,
+            editor_user_id: userId
+          })
+       });
+       closeEditModal();
+       loadTasks();
+    }
 
+    async function confirmDeleteTask() {
+      if (!currentDeleteTaskId) return;
+      
+      try {
+        const response = await fetch("/api/delete_task", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            task_id: currentDeleteTaskId,
+            user_id: userId
+          })
+        });
+
+        const result = await response.json();
+
+        if (result.success) {
+          closeDeleteModal();
+          // alert("Task deleted successfully."); // Optional: remove alert for smoother UX
+          loadTasks();
+        } else {
+          alert("Error: " + (result.error || "Unknown error"));
+        }
+      } catch (e) {
+        console.error("Delete failed", e);
+        alert("Failed to delete task.");
+      }
+    }
+
+    // Init
+    loadSlackUsers();
     loadTasks();
   </script>
 </body>
