@@ -74,9 +74,6 @@ def init_db():
     )
     """)
 
-    
-
-
     conn.commit()
     conn.close()
 
@@ -182,36 +179,37 @@ def extract_due_date(task_text):
 
     # --- LLM Prompt ---
     prompt = f"""
-Reference Context:
+   Reference Context:
 - Current IST Day: {query_day}
 - Current IST Date: {current_date}
 - Current IST Time: {current_time}
-
 You are a precise date & time extractor for a task manager used in India (IST).
-
 Your job:
-1. Determine if the text implies a **deadline** — any date, weekday, time, or relative term like "tomorrow", "next week", etc.
+1. Determine if the text implies a **deadline** — specific dates, times, or relative durations ("in 30 mins", "next 1 hour").
 2. Infer missing parts based on current IST context.
-
+3. Remove the date/time reference from the text to clean it.
 Rules:
-- Only time → assume today ({query_day}, {current_date})
-- "today" → use today
-- "tomorrow" → add +1 day
-- "yesterday" → skip (no deadline)
+- Only time implied? assume today ({query_day}, {current_date}).
+- "today" ? use today.
+- "tomorrow" ? add +1 day.
+- "yesterday" ? skip (no deadline).
 - Weekday ("Monday", "Tuesday", etc.):
     * If the weekday is today or has already passed this week, pick **next occurrence**.
     * If it's later in this week, pick that date.
-- "before <weekday>" → deadline = one day before that weekday.
-- Date-only (like "2nd") → assume current month.
-- "2 Nov" or "Nov 2" → use that date directly.
-- Missing both date/time → leave blank.
--  Convert vague times:
+- "before <weekday>" ? deadline = one day before that weekday.
+- Date-only (like "2nd") ? assume current month.
+- "2 Nov" or "Nov 2" ? use that date directly.
+- Missing both date/time ? leave blank.
+IMPORTANT - Relative Duration Logic:
+- Phrases like "in X hours", "next X mins", "within X hours":
+    * ADD that duration to the **Current IST Time**.
+    * If the result crosses midnight, increment the **Current IST Date** by +1.
+    * Example: If Current Time is 14:00 and input is "in 2 hours", result is 16:00 today.
+- Convert vague times:
    - morning = 11:00
    - afternoon = 14:00
    - evening = 17:00
    - night = 21:00
-
-
 Return output strictly as JSON:
 {{
   "date": "DD:MM" or "",
@@ -219,10 +217,8 @@ Return output strictly as JSON:
   "day": "Weekday" or "",
   "text": "remaining task text without date/time info"
 }}
-
 Task: "{task_text}"
 """
-
     try:
         fn_decl = {
             "name": "extract_due_date",
@@ -673,7 +669,6 @@ def delete_task_internal(task_id, user_id, client, logger):
     return True
 
 
-
 #editing functionality
 def edit_task(task_id, new_assignees, editor_user_id, client, logger, new_text=None, new_due=None):
     conn = sqlite3.connect(DB_FILE)
@@ -773,64 +768,6 @@ def get_slack_users():
         })
 
     return users
-
-
-# @slack_app.command("/listtasks")
-# def list_tasks(ack, body, client, logger):
-#     ack()
-#     user_id = body["user_id"]
-
-#     conn = sqlite3.connect(DB_FILE)
-#     c = conn.cursor()
-
-#     # --- Fetch tasks for user considering two-table schema ---
-#     c.execute("""
-#         SELECT t.id, t.text, ta.assigned_to, t.user_id, ta.done, t.due, t.file_url
-#         FROM tasks t
-#         LEFT JOIN task_assignments ta ON t.id = ta.task_id
-#         WHERE t.user_id = ? OR ta.assigned_to = ?
-#         ORDER BY t.id DESC
-#     """, (user_id, user_id))
-#     rows = c.fetchall()
-#     conn.close()
-
-#     if not rows:
-#         dm = client.conversations_open(users=user_id)
-#         dm_channel = dm["channel"]["id"]
-#         client.chat_postMessage(channel=dm_channel, text="📭 You have no tasks yet.")
-#         return
-
-#     msg_lines = []
-#     for row in rows:
-#         task_id, text, assigned_to, creator, done, due, file_url = row
-#         status = "✅" if done else "🕒"
-
-#         # --- Format due date nicely ---
-#         due_text = ""
-#         if due and isinstance(due, str):
-#             try:
-#                 due_dt = datetime.fromisoformat(due)
-#                 due_text = f" (Due: {due_dt.strftime('%a, %b %d at %I:%M %p')})"
-#             except Exception:
-#                 due_text = f" (Due: {due})"
-
-#         # --- Format assigned user correctly ---
-        
-#         assigned_text=""
-       
-#         if assigned_to and assigned_to !=creator:
-#             assigned_text = f" → Assigned to <@{assigned_to}>"
-
-#         # --- File attachment if exists ---
-#         file_text = f" 📎 <{file_url}|Attachment>" if file_url else ""
-
-#         # msg_lines.append(f"{status} *{text}* — ID: `{task_id}`{due_text}{assigned_text}{file_text}")
-#         msg_lines.append(f"{status}*{text}*-ID: `{task_id}`{due_text}{assigned_text}{file_text}")
-
-#     # --- Open DM and send message ---
-#     dm = client.conversations_open(users=user_id)
-#     dm_channel = dm["channel"]["id"]
-#     client.chat_postMessage(channel=dm_channel, text="🧾 *Your Tasks:*\n" + "\n".join(msg_lines))
 
 
 @slack_app.command("/completetasknew")
