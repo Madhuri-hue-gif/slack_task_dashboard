@@ -270,7 +270,7 @@ async function submitCompleteTask() {
           // Store tasks for easy lookup later
           globalTasks = {};
           // ✅ Use assignment_id here so notes don't overwrite each other
-          tasks.forEach(t => globalTasks[t.assignment_id] = t);
+          tasks.forEach(t => globalTasks[t.id] = t);
 
           // ... (Keep your existing filter logic here) ...
           const assignedFilter = document.getElementById("filterAssigned").value.toLowerCase();
@@ -301,14 +301,16 @@ async function submitCompleteTask() {
 
         const html = `
             <table>
-              <thead>...</thead>
+              <thead>
+                <th>ID</th><th>Creator</th><th>Assigned To</th><th>Task</th><th>Status</th><th>Due</th><th>Action</th>
+                </thead>
               <tbody>
                 ${tasks.map((t) => {
                   const isCreator = (t.creator_id === userId);
                   let actionButtons = "";
 
                   if (!t.done) {
-                    // Pending Actions
+                    // Pending  TaskActions
                     actionButtons += `<button class="complete" onclick="openCompleteModal(${t.id})">✓</button> `;
                     if (isCreator) {
                        actionButtons += `<button class="edit" onclick="openEditModal(${t.id}, '${t.assigned_to_id || ''}')">✎</button>
@@ -317,28 +319,41 @@ async function submitCompleteTask() {
                   } else {
                     // Completed Actions
                     // ✅ CHANGE: Pass t.assignment_id instead of t.id
-                    actionButtons += `<button class="view-remarks" onclick="openRemarksModal(${t.assignment_id})">📜 View Note</button>`;
+                    actionButtons += `<button class="view-remarks" onclick="openRemarksModal(${t.id})">📜 View Note</button>`;
                     
-                    if (isCreator) {
-                      actionButtons += ` <button class="delete" onclick="openDeleteModal(${t.id})">🗑️</button>`;
-                    }
+                   
                   }
                   
-                  // ... (Return row HTML) ...
+                   
                   
-                }).join("")}
+
+                  return `
+                  <tr class="${t.done ? 'completed-row': ''}">
+                    <td>${t.id}</td>
+                    <td>${t.creator}</td>
+                    <td>${t.assigned_to_name}</td>
+                    <td>${t.text}</td>
+                    <td>${t.done ? '<span class="done">Done</span>' : '<span class="pending">Pending</span>'}</td>
+                    <td>${formatDateTime(t.due)}</td>
+                    <td>
+                      ${actionButtons}
+                    </td>
+                  </tr>
+                `}).join("")} 
+                  
+                
               </tbody>
             </table>`;
           document.getElementById("tasks").innerHTML = html;
         })
-        .catch(err => console.error("Error:", err));
+        .catch(err => console.error("Error loading tasks:", err));
     }
 
 
     // --- NEW REMARKS FUNCTIONS ---
     // ✅ Accepts assignmentId now
-    function openRemarksModal(assignmentId) {
-      const task = globalTasks[assignmentId]; // Look up by unique ID
+    function openRemarksModal(taskId) {
+      const task = globalTasks[taskId]; // Look up by unique ID
       const remarks = task && task.remarks ? task.remarks : "No remarks provided.";
       
       document.getElementById("remarksText").textContent = remarks;

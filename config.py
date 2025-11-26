@@ -26,9 +26,9 @@ DB_FILE = "tasks.db"
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 SLACK_BOT_TOKEN = os.getenv("SLACK_BOT_TOKEN")
 SLACK_APP_TOKEN = os.getenv("SLACK_APP_TOKEN")
-PUBLIC_HOST = os.getenv("PUBLIC_HOST", "http://192.168.1.173:5000")
-# PUBLIC_HOST = os.getenv("PUBLIC_HOST", "http://192.168.2.180:4000")
+PUBLIC_HOST = os.getenv("PUBLIC_HOST")
 
+FLASK_PORT = int(os.getenv("FLASK_PORT"))
 if not GEMINI_API_KEY:
     raise ValueError("❌ No API key provided. Please set GEMINI_API_KEY in your .env file.")
 
