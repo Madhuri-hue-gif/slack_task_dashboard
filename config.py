@@ -28,7 +28,7 @@ SLACK_BOT_TOKEN = os.getenv("SLACK_BOT_TOKEN")
 SLACK_APP_TOKEN = os.getenv("SLACK_APP_TOKEN")
 PUBLIC_HOST = os.getenv("PUBLIC_HOST")
 
-FLASK_PORT = int(os.getenv("FLASK_PORT"))
+FLASK_PORT = int(os.getenv("FLASK_PORT", 5000))
 if not GEMINI_API_KEY:
     raise ValueError("❌ No API key provided. Please set GEMINI_API_KEY in your .env file.")
 
