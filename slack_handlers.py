@@ -5,6 +5,8 @@ from config import slack_app, PUBLIC_HOST, DB_FILE
 from database import add_task_db, delete_task_internal
 from helpers import extract_due_date, complete_task_logic
 
+PUBLIC_HOST="https://slack-task-dashboard-2.onrender.com"
+
 @slack_app.command("/addtask")
 def add_task(ack, body, client, logger):
     ack()
