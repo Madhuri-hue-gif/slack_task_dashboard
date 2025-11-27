@@ -1,6 +1,6 @@
 import sqlite3
 from datetime import datetime
-from config import DB_FILE, client
+from config import DB_FILE, client,IST
 
 # Cache for usernames
 user_cache = {}
@@ -53,7 +53,8 @@ def get_username(uid):
         return uid
 
 def add_task_db(creator, assignees, text, due=None, file_url=None):
-    created_at = datetime.now().isoformat()
+    # created_at = datetime.now().isoformat()
+    created_at = datetime.now(IST).isoformat()
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
 
@@ -134,6 +135,7 @@ def delete_task_internal(task_id, user_id, client, logger):
         return False
 
     _, creator_id, task_text = row
+
 
     # 2. Fetch assignees
     c.execute("SELECT assigned_to FROM task_assignments WHERE task_id=?", (task_id,))
