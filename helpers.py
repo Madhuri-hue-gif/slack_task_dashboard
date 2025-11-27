@@ -107,8 +107,8 @@ Task: "{task_text}"
         if time_str and not date_str:
             date_str = current_date
             day_str = query_day
-        if not date_str and not time_str:
-            return None, None, None, cleaned_text
+        # if not date_str and not time_str:
+        #     return None, None, None, cleaned_text
 
         # --- Weekday fallback inference ---
         if not date_str and day_str:
@@ -143,6 +143,17 @@ Task: "{task_text}"
         matched_text, due_dt = results[0]
         cleaned_text = task_text.replace(matched_text, "").strip()
         return due_dt.strftime("%d:%m"), due_dt.strftime("%H:%M"), due_dt.strftime("%A"), cleaned_text
+    
+
+      # --- 24 HOUR DEFAULT ---
+    # If no date/time found by LLM or dateparser, set due date to 24 hours from now
+    default_due = date_time + timedelta(hours=24)
+    return (
+        default_due.strftime("%d:%m"), 
+        default_due.strftime("%H:%M"), 
+        default_due.strftime("%A"), 
+        task_text.strip()
+    )
 
     return None, None, None, task_text.strip()
 
@@ -243,6 +254,22 @@ def complete_task_logic(task_id, user_who_clicked, slack_channel=None, message_t
     task_text = task[2] or "[No description]"
     creator_id = task[1]
     user_name = get_username(user_who_clicked)
+    # due_str = task[4]
+
+    # --- ✅ CHECK IF LATE ---
+    # is_late = False
+    # if due_str:
+    #     try:
+    #         # Assuming due_str is ISO format
+    #         due_dt = datetime.fromisoformat(due_str)
+    #         # Ensure timezone awareness for comparison (using server local time if naive)
+    #         if due_dt.tzinfo is None:
+    #             due_dt = due_dt.replace(tzinfo=None) 
+            
+    #         if datetime.now() > due_dt:
+    #             is_late = True
+    #     except Exception as e:
+    #         logging.error(f"Date comparison failed: {e}")
     
     final_remark = ""
     if note:

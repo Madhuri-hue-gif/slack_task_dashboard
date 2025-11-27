@@ -115,7 +115,8 @@ def get_tasks_for_user(uid):
             "due": r[4] or "-",
             "done": bool(r[5]),
             "created_at": r[6] or "-",
-            "remarks": r[7] or ""
+            "remarks": r[7] or "",
+            # "completed_at": r[8]  
         }
         for r in rows
     ]
