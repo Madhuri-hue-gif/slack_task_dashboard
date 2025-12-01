@@ -20,73 +20,55 @@ def extract_due_date(task_text):
     current_date = date_time.strftime("%d:%m")
     current_time = date_time.strftime("%H:%M")
 
-    prompt = get_prompt(task_text)
+    prompt = get_prompt(task_text) or ""
+    if not prompt.strip():
+        prompt = f"""Extract date, time, weekday from this task.
+Return JSON: {{"date":"","time":"","day":"","text":""}}
+Task: "{task_text}"
+"""
 
     try:
-        # fn_decl = {
-        #     "name": "extract_due_date",
-        #     "description": "Extracts first due date, time, and weekday from a task description.",
-        #     "parameters": {
-        #         "type": "object",
-        #         "properties": {
-        #             "date": {"type": "string", "description": "Due date in DD:MM format or empty"},
-        #             "time": {"type": "string", "description": "Due time in HH:MM (24h) format or empty"},
-        #             "day": {"type": "string", "description": "Weekday name or empty"},
-        #             "text": {"type": "string", "description": "Cleaned task text without date/time"},
-        #         },
-        #         "required": ["text"],
-        #     },
-        # }
-
-        # tools = [types.Tool(function_declarations=[fn_decl])]
-        # config = types.GenerateContentConfig(tools=tools)
-
-        # response = gemini_client.models.generate_content(
-        #     model="gemini-2.5-flash",
-        #     contents=[{"role": "user", "parts": [{"text": prompt}]}],
-        #     config=config,
-        # )
-
         response = client.chat.completions.create(
-            model="llama3-70b",
-            messages=[{"role": "user", "content": prompt}],
+            model="allam-2-7b",
+            messages=[
+                {
+                    "role": "user",
+                    "content": prompt
+                }
+            ],
             temperature=0,
         )
 
-        print(response.choices[0].message.content)
-        return
+        raw = response.choices[0].message.content
+        print("LLM:", raw)
 
-        candidate = response.candidates[0]
-        date_str = time_str = day_str = ""
-        cleaned_text = task_text.strip()
+        # --- Parse JSON safely ---
+        try:
+            data = json.loads(raw)
+        except:
+            # Extract JSON substring
+            import re
+            match = re.search(r"\{.*\}", raw, re.S)
+            data = json.loads(match.group(0)) if match else {}
 
-        if candidate.content.parts and candidate.content.parts[0].function_call:
-            fn_call = candidate.content.parts[0].function_call
-            args = fn_call.args
-            if isinstance(args, str):
-                args = json.loads(args)
+        date_str = data.get("date", "") or ""
+        time_str = data.get("time", "") or ""
+        day_str  = data.get("day", "") or ""
+        cleaned_text = data.get("text", task_text).strip()
 
-            date_str = args.get("date") or ""
-            time_str = args.get("time") or ""
-            day_str = args.get("day") or ""
-            cleaned_text = args.get("text", task_text).strip()
-
-        # --- Defaulting Rules ---
+        # ---- Default rules ----
         if time_str and not date_str:
             date_str = current_date
             day_str = query_day
-        # if not date_str and not time_str:
-        #     return None, None, None, cleaned_text
 
-        # --- Weekday fallback inference ---
+        # --- Weekday inference ---
         if not date_str and day_str:
             weekday_map = {day.lower(): i for i, day in enumerate(calendar.day_name)}
             if day_str.lower() in weekday_map:
                 target_idx = weekday_map[day_str.lower()]
                 today_idx = weekday_map[query_day.lower()]
                 days_ahead = (target_idx - today_idx) % 7
-                if days_ahead == 0:
-                    days_ahead = 7
+                days_ahead = 7 if days_ahead == 0 else days_ahead
                 due_dt = date_time + timedelta(days=days_ahead)
                 return due_dt.strftime("%d:%m"), "23:59", day_str, cleaned_text
 
@@ -95,35 +77,36 @@ def extract_due_date(task_text):
         if date_str:
             try:
                 if time_str:
-                    due_dt = datetime.strptime(f"{date_str}:{year} {time_str}", "%d:%m:%Y %H:%M").replace(tzinfo=IST)
+                    due_dt = datetime.strptime(
+                        f"{date_str}:{year} {time_str}", "%d:%m:%Y %H:%M"
+                    ).replace(tzinfo=IST)
                 else:
-                    due_dt = datetime.strptime(f"{date_str}:{year} 23:59", "%d:%m:%Y %H:%M").replace(tzinfo=IST)
-                return due_dt.strftime("%d:%m"), due_dt.strftime("%H:%M"), due_dt.strftime("%A"), cleaned_text
-            except Exception:
+                    due_dt = datetime.strptime(
+                        f"{date_str}:{year} 23:59", "%d:%m:%Y %H:%M"
+                    ).replace(tzinfo=IST)
+
+                return (
+                    due_dt.strftime("%d:%m"),
+                    due_dt.strftime("%H:%M"),
+                    due_dt.strftime("%A"),
+                    cleaned_text,
+                )
+            except:
                 pass
 
     except Exception as e:
-        print(f"⚠️ LLM extraction failed: {e}")
+        print("⚠️ LLM extraction failed:", e)
 
-    # --- Fallback using dateparser ---
-    results = search_dates(task_text, settings={"PREFER_DATES_FROM": "future"})
-    if results:
-        matched_text, due_dt = results[0]
-        cleaned_text = task_text.replace(matched_text, "").strip()
-        return due_dt.strftime("%d:%m"), due_dt.strftime("%H:%M"), due_dt.strftime("%A"), cleaned_text
-    
-
-      # --- 24 HOUR DEFAULT ---
-    # If no date/time found by LLM or dateparser, set due date to 24 hours from now
+    # --- 24-Hour Default ---
     default_due = date_time + timedelta(hours=24)
-    return (
-        default_due.strftime("%d:%m"), 
-        default_due.strftime("%H:%M"), 
-        default_due.strftime("%A"), 
-        task_text.strip()
+    data = (
+        default_due.strftime("%d:%m"),
+        default_due.strftime("%H:%M"),
+        default_due.strftime("%A"),
+        task_text.strip(),
     )
-
-    return None, None, None, task_text.strip()
+    print(f"extracted date is: {data}")
+    # return data
 
 def reminder_loop():
     """
