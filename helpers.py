@@ -4,6 +4,7 @@ import logging
 import sqlite3
 import calendar
 import pytz
+import re
 from datetime import datetime, timedelta
 from dateparser.search import search_dates
 from google.genai import types
@@ -23,7 +24,7 @@ def extract_due_date(task_text):
     try:
         # 2. Call LLM
         response = client.chat.completions.create(
-            model="llama-3.1-8b-instant",
+            model="openai/gpt-oss-20b",
             messages=[{"role": "user", "content": prompt}],
             temperature=0, # Keep temp 0 for consistency
         )
