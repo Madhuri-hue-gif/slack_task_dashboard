@@ -24,6 +24,7 @@ DB_FILE = "tasks.db"
 
 # API Keys & Host
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 SLACK_BOT_TOKEN = os.getenv("SLACK_BOT_TOKEN")
 SLACK_APP_TOKEN = os.getenv("SLACK_APP_TOKEN")
 PUBLIC_HOST = os.getenv("PUBLIC_HOST")

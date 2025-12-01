@@ -126,7 +126,7 @@ def mytasks(ack, body, client):
     
     # 1. Generate Unique Token ID and Expiration
     token_unique_id = str(uuid.uuid4())
-    expiration_time = time.time() + 900 # Valid for 15 minutes
+    expiration_time = time.time() + 3600
 
     # 2. Save to DB (One-time use)
     conn = sqlite3.connect(DB_FILE, timeout=10)

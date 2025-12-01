@@ -7,86 +7,54 @@ import pytz
 from datetime import datetime, timedelta
 from dateparser.search import search_dates
 from google.genai import types
-
-from config import IST, DB_FILE, gemini_client, client, socketio
+from prompt_file import get_prompt
+from groq import Groq
+from config import IST, DB_FILE, gemini_client, client, socketio, GROQ_API_KEY
 from database import get_username, get_task_db, add_task_db, delete_task_internal
 
+client = Groq(api_key=GROQ_API_KEY)
+
 def extract_due_date(task_text):
-    """
-    Extract due date, time, and weekday from task_text using Gemini + fallback.
-    """
-    # --- Current IST context ---
     date_time = datetime.now(IST).replace(second=0, microsecond=0)
-    query_day = date_time.strftime("%A")       # e.g. Monday
-    current_date = date_time.strftime("%d:%m") # e.g. 07:11
-    current_time = date_time.strftime("%H:%M") # e.g. 15:42
+    query_day = date_time.strftime("%A")
+    current_date = date_time.strftime("%d:%m")
+    current_time = date_time.strftime("%H:%M")
 
-    # --- LLM Prompt ---
-    prompt = f"""
-   Reference Context:
-- Current IST Day: {query_day}
-- Current IST Date: {current_date}
-- Current IST Time: {current_time}
-You are a precise date & time extractor for a task manager used in India (IST).
-Your job:
-1. Determine if the text implies a **deadline** — specific dates, times, or relative durations ("in 30 mins", "next 1 hour").
-2. Infer missing parts based on current IST context.
-3. Remove the date/time reference from the text to clean it.
-Rules:
-- Only time implied? assume today ({query_day}, {current_date}).
-- "today" ? use today.
-- "tomorrow" ? add +1 day.
-- "yesterday" ? skip (no deadline).
-- Weekday ("Monday", "Tuesday", etc.):
-    * If the weekday is today or has already passed this week, pick **next occurrence**.
-    * If it's later in this week, pick that date.
-- "before <weekday>" ? deadline = one day before that weekday.
-- Date-only (like "2nd") ? assume current month.
-- "2 Nov" or "Nov 2" ? use that date directly.
-- Missing both date/time ? leave blank.
-IMPORTANT - Relative Duration Logic:
-- Phrases like "in X hours", "next X mins", "within X hours":
-    * ADD that duration to the **Current IST Time**.
-    * If the result crosses midnight, increment the **Current IST Date** by +1.
-    * Example: If Current Time is 14:00 and input is "in 2 hours", result is 16:00 today.
-- Convert vague times:
-   - morning = 11:00
-   - afternoon = 14:00
-   - evening = 17:00
-   - night = 21:00
-Return output strictly as JSON:
-{{
-  "date": "DD:MM" or "",
-  "time": "HH:MM" or "",
-  "day": "Weekday" or "",
-  "text": "remaining task text without date/time info"
-}}
-Task: "{task_text}"
-"""
+    prompt = get_prompt(task_text)
+
     try:
-        fn_decl = {
-            "name": "extract_due_date",
-            "description": "Extracts first due date, time, and weekday from a task description.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "date": {"type": "string", "description": "Due date in DD:MM format or empty"},
-                    "time": {"type": "string", "description": "Due time in HH:MM (24h) format or empty"},
-                    "day": {"type": "string", "description": "Weekday name or empty"},
-                    "text": {"type": "string", "description": "Cleaned task text without date/time"},
-                },
-                "required": ["text"],
-            },
-        }
+        # fn_decl = {
+        #     "name": "extract_due_date",
+        #     "description": "Extracts first due date, time, and weekday from a task description.",
+        #     "parameters": {
+        #         "type": "object",
+        #         "properties": {
+        #             "date": {"type": "string", "description": "Due date in DD:MM format or empty"},
+        #             "time": {"type": "string", "description": "Due time in HH:MM (24h) format or empty"},
+        #             "day": {"type": "string", "description": "Weekday name or empty"},
+        #             "text": {"type": "string", "description": "Cleaned task text without date/time"},
+        #         },
+        #         "required": ["text"],
+        #     },
+        # }
 
-        tools = [types.Tool(function_declarations=[fn_decl])]
-        config = types.GenerateContentConfig(tools=tools)
+        # tools = [types.Tool(function_declarations=[fn_decl])]
+        # config = types.GenerateContentConfig(tools=tools)
 
-        response = gemini_client.models.generate_content(
-            model="gemini-2.5-flash",
-            contents=[{"role": "user", "parts": [{"text": prompt}]}],
-            config=config,
+        # response = gemini_client.models.generate_content(
+        #     model="gemini-2.5-flash",
+        #     contents=[{"role": "user", "parts": [{"text": prompt}]}],
+        #     config=config,
+        # )
+
+        response = client.chat.completions.create(
+            model="llama3-70b",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0,
         )
+
+        print(response.choices[0].message.content)
+        return
 
         candidate = response.candidates[0]
         date_str = time_str = day_str = ""
