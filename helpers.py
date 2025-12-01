@@ -15,98 +15,111 @@ from database import get_username, get_task_db, add_task_db, delete_task_interna
 client = Groq(api_key=GROQ_API_KEY)
 
 def extract_due_date(task_text):
-    date_time = datetime.now(IST).replace(second=0, microsecond=0)
-    query_day = date_time.strftime("%A")
-    current_date = date_time.strftime("%d:%m")
-    current_time = date_time.strftime("%H:%M")
-
-    prompt = get_prompt(task_text) or ""
-    if not prompt.strip():
-        prompt = f"""Extract date, time, weekday from this task.
-Return JSON: {{"date":"","time":"","day":"","text":""}}
-Task: "{task_text}"
-"""
+    now = datetime.now(IST).replace(second=0, microsecond=0)
+    
+    # 1. Get Prompt
+    prompt = get_prompt(task_text)
 
     try:
+        # 2. Call LLM
         response = client.chat.completions.create(
-            model="allam-2-7b",
-            messages=[
-                {
-                    "role": "user",
-                    "content": prompt
-                }
-            ],
-            temperature=0,
+            model="llama-3.1-8b-instant",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0, # Keep temp 0 for consistency
         )
 
         raw = response.choices[0].message.content
-        print("LLM:", raw)
 
-        # --- Parse JSON safely ---
+        # 3. Robust JSON Parsing
         try:
             data = json.loads(raw)
-        except:
-            # Extract JSON substring
-            import re
-            match = re.search(r"\{.*\}", raw, re.S)
-            data = json.loads(match.group(0)) if match else {}
+        except json.JSONDecodeError:
+            # Regex to find the first valid JSON object in text
+            match = re.search(r"\{.*?\}", raw, re.DOTALL)
+            if match:
+                data = json.loads(match.group(0))
+            else:
+                raise Exception("No JSON found")
 
-        date_str = data.get("date", "") or ""
-        time_str = data.get("time", "") or ""
-        day_str  = data.get("day", "") or ""
+        date_str = data.get("date", "").strip()
+        time_str = data.get("time", "").strip()
+        day_str = data.get("day", "").strip()
         cleaned_text = data.get("text", task_text).strip()
 
-        # ---- Default rules ----
-        if time_str and not date_str:
-            date_str = current_date
-            day_str = query_day
-
-        # --- Weekday inference ---
-        if not date_str and day_str:
+        # 4. Logic Resolution
+        
+        # A. Handle Weekday (e.g., "Friday")
+        if day_str and not date_str:
             weekday_map = {day.lower(): i for i, day in enumerate(calendar.day_name)}
-            if day_str.lower() in weekday_map:
-                target_idx = weekday_map[day_str.lower()]
-                today_idx = weekday_map[query_day.lower()]
-                days_ahead = (target_idx - today_idx) % 7
-                days_ahead = 7 if days_ahead == 0 else days_ahead
-                due_dt = date_time + timedelta(days=days_ahead)
-                return due_dt.strftime("%d:%m"), "23:59", day_str, cleaned_text
+            target_idx = weekday_map.get(day_str.lower())
+            
+            if target_idx is not None:
+                current_weekday_idx = now.weekday()
+                days_ahead = (target_idx - current_weekday_idx)
+                
+                # If it's today or past day in current week, move to next week
+                if days_ahead <= 0: 
+                    days_ahead += 7
+                    
+                target_date = now + timedelta(days=days_ahead)
+                date_str = target_date.strftime("%d:%m")
 
-        # --- Final validation ---
-        year = date_time.year
-        if date_str:
-            try:
-                if time_str:
-                    due_dt = datetime.strptime(
-                        f"{date_str}:{year} {time_str}", "%d:%m:%Y %H:%M"
-                    ).replace(tzinfo=IST)
+        # B. Handle Missing Date (Implies Today)
+        if not date_str:
+            date_str = now.strftime("%d:%m")
+
+        # C. Handle Time Parsing & Smart Adjustment
+        final_dt = None
+        
+        if date_str and time_str:
+            # Parse extracted date and time
+            parsed_dt = datetime.strptime(
+                f"{date_str}:{now.year} {time_str}", "%d:%m:%Y %H:%M"
+            ).replace(tzinfo=IST)
+
+            # Smart Logic: If the user said "2:30" (AM implied) but it's currently 4 PM,
+            # and the date is Today, they likely meant 2:30 PM (14:30) or Tomorrow.
+            
+            # Case 1: Time passed today? 
+            if parsed_dt < now:
+                # Try adding 12 hours (e.g., 2:30 -> 14:30)
+                pm_shift = parsed_dt + timedelta(hours=12)
+                if pm_shift > now and pm_shift.day == parsed_dt.day:
+                    final_dt = pm_shift
                 else:
-                    due_dt = datetime.strptime(
-                        f"{date_str}:{year} 23:59", "%d:%m:%Y %H:%M"
-                    ).replace(tzinfo=IST)
+                    # If even PM is past (or it was already PM), assume Tomorrow
+                    final_dt = parsed_dt + timedelta(days=1)
+            else:
+                final_dt = parsed_dt
+        
+        elif date_str and not time_str:
+            # Default to End of Day if no time specified
+            final_dt = datetime.strptime(
+                f"{date_str}:{now.year} 23:59", "%d:%m:%Y %H:%M"
+            ).replace(tzinfo=IST)
 
-                return (
-                    due_dt.strftime("%d:%m"),
-                    due_dt.strftime("%H:%M"),
-                    due_dt.strftime("%A"),
-                    cleaned_text,
-                )
-            except:
-                pass
+        # Output formatting
+        if final_dt:
+            data = (
+                final_dt.strftime("%d:%m"),
+                final_dt.strftime("%H:%M"),
+                final_dt.strftime("%A"),
+                cleaned_text
+            )
+            print(f"the data is {data}")
+            # return data
 
     except Exception as e:
-        print("⚠️ LLM extraction failed:", e)
+        print(f"Extraction Error: {e}")
 
-    # --- 24-Hour Default ---
-    default_due = date_time + timedelta(hours=24)
-    data = (
-        default_due.strftime("%d:%m"),
-        default_due.strftime("%H:%M"),
-        default_due.strftime("%A"),
-        task_text.strip(),
+    # --- Fallback: 24 Hours from now ---
+    fallback_dt = now + timedelta(days=1)
+    return (
+        fallback_dt.strftime("%d:%m"),
+        fallback_dt.strftime("%H:%M"),
+        fallback_dt.strftime("%A"),
+        task_text.strip() # Return original text on fail
     )
-    print(f"extracted date is: {data}")
-    # return data
 
 def reminder_loop():
     """
