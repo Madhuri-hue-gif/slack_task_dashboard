@@ -27,8 +27,8 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 SLACK_BOT_TOKEN = os.getenv("SLACK_BOT_TOKEN")
 SLACK_APP_TOKEN = os.getenv("SLACK_APP_TOKEN")
 PUBLIC_HOST = os.getenv("PUBLIC_HOST")
+FLASK_PORT = int(os.getenv("FLASK_PORT", 4000))
 
-FLASK_PORT = int(os.getenv("FLASK_PORT", 5000))
 if not GEMINI_API_KEY:
     raise ValueError("❌ No API key provided. Please set GEMINI_API_KEY in your .env file.")
 
@@ -36,6 +36,13 @@ if not GEMINI_API_KEY:
 gemini_client = genai.Client(api_key=GEMINI_API_KEY)
 
 flask_app = Flask(__name__)
+
+# [IMPORTANT] Security Key
+# This ensures users stay logged in if the server restarts. 
+# In production, set this in your .env file.
+flask_app.secret_key = os.getenv("SECRET_KEY", "Change_This_To_A_Long_Random_String_XYZ_123")
+SECRET_KEY = flask_app.secret_key
+
 socketio = SocketIO(flask_app, cors_allowed_origins="*")
 
 slack_app = App(token=SLACK_BOT_TOKEN)

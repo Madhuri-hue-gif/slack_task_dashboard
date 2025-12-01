@@ -1,11 +1,12 @@
 import re
 import sqlite3
+import jwt
+import uuid
+import time
 from datetime import datetime
-from config import slack_app, PUBLIC_HOST, DB_FILE
+from config import slack_app, PUBLIC_HOST, DB_FILE, SECRET_KEY
 from database import add_task_db, delete_task_internal
 from helpers import extract_due_date, complete_task_logic
-
-# PUBLIC_HOST="https://slack-task-dashboard-2.onrender.com"
 
 @slack_app.command("/addtask")
 def add_task(ack, body, client, logger):
@@ -122,5 +123,31 @@ def complete_task_command(ack, body, client):
 def mytasks(ack, body, client):
     ack()
     user_id = body["user_id"]
-    url = f"{PUBLIC_HOST}/dashboard/{user_id}"
-    client.chat_postMessage(channel=user_id, text=f"🧭 Open your Task Dashboard: <{url}|Click here>")
+    
+    # 1. Generate Unique Token ID and Expiration
+    token_unique_id = str(uuid.uuid4())
+    expiration_time = time.time() + 900 # Valid for 15 minutes
+
+    # 2. Save to DB (One-time use)
+    conn = sqlite3.connect(DB_FILE, timeout=10)
+    c = conn.cursor()
+    c.execute("INSERT INTO login_tokens (token_id, user_id, expires_at) VALUES (?, ?, ?)", 
+              (token_unique_id, user_id, expiration_time))
+    conn.commit()
+    conn.close()
+
+    # 3. Create JWT
+    payload = {
+        "jti": token_unique_id,
+        "user_id": user_id,
+        "exp": expiration_time
+    }
+    token = jwt.encode(payload, SECRET_KEY, algorithm="HS256")
+    
+    # 4. Create secure link
+    url = f"{PUBLIC_HOST}/login?token={token}"
+    
+    client.chat_postMessage(
+        channel=user_id, 
+        text=f"🧭 *Secure Dashboard Access*\n<{url}|Click here to open your Dashboard>\n_Link is valid for 15 mins and works once._"
+    )

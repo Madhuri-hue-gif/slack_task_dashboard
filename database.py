@@ -1,6 +1,6 @@
 import sqlite3
 from datetime import datetime
-from config import DB_FILE, client,IST
+from config import DB_FILE, client, IST
 
 # Cache for usernames
 user_cache = {}
@@ -36,6 +36,15 @@ def init_db():
     )
     """)
 
+    # --- NEW: One-Time Login Tokens Table ---
+    c.execute("""
+    CREATE TABLE IF NOT EXISTS login_tokens (
+        token_id TEXT PRIMARY KEY,
+        user_id TEXT,
+        expires_at REAL
+    )
+    """)
+
     conn.commit()
     conn.close()
 
@@ -53,7 +62,6 @@ def get_username(uid):
         return uid
 
 def add_task_db(creator, assignees, text, due=None, file_url=None):
-    # created_at = datetime.now().isoformat()
     created_at = datetime.now(IST).isoformat()
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
@@ -117,13 +125,11 @@ def get_tasks_for_user(uid):
             "done": bool(r[5]),
             "created_at": r[6] or "-",
             "remarks": r[7] or "",
-            # "completed_at": r[8]  
         }
         for r in rows
     ]
 
 def delete_task_internal(task_id, user_id, client, logger):
-    # 1. Fetch task info
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
     c.execute("SELECT id, user_id, text FROM tasks WHERE id=?", (task_id,))
@@ -136,19 +142,14 @@ def delete_task_internal(task_id, user_id, client, logger):
 
     _, creator_id, task_text = row
 
-
-    # 2. Fetch assignees
     c.execute("SELECT assigned_to FROM task_assignments WHERE task_id=?", (task_id,))
     assignees = [r[0] for r in c.fetchall()]
-
     conn.close()
 
-    # 3. Permission check
     if user_id != creator_id and user_id not in assignees:
         logger.error("Permission denied for delete (internal call).")
         return False
 
-    # 4. Delete task + its assignments
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
     c.execute("DELETE FROM tasks WHERE id=?", (task_id,))
@@ -156,34 +157,22 @@ def delete_task_internal(task_id, user_id, client, logger):
     conn.commit()
     conn.close()
 
-    # 5. DM creator (if different from user deleting)
     if creator_id != user_id:
         try:
             dm = client.conversations_open(users=creator_id)
             dm_channel = dm["channel"]["id"]
-            msg = (
-                f"❗ *Task Deleted*\n"
-                f"<@{user_id}> deleted your task:\n"
-                f"➡️ *{task_text}*"
-            )
+            msg = (f"❗ *Task Deleted*\n<@{user_id}> deleted your task:\n➡️ *{task_text}*")
             client.chat_postMessage(channel=dm_channel, text=msg)
         except Exception as e:
             logger.exception(f"DM to creator failed: {e}")
 
-    # 6. DM assignees
     for assigned_user in assignees:
         if assigned_user == user_id:
-            continue  # skip the user who deleted
-
+            continue
         try:
             dm = client.conversations_open(users=assigned_user)
             dm_channel = dm["channel"]["id"]
-            msg = (
-                f"❗ *Assigned Task Deleted*\n"
-                f"The task assigned to you was deleted:\n"
-                f"➡️ *{task_text}*\n"
-                f"Deleted by: <@{user_id}>"
-            )
+            msg = (f"❗ *Assigned Task Deleted*\nThe task assigned to you was deleted:\n➡️ *{task_text}*\nDeleted by: <@{user_id}>")
             client.chat_postMessage(channel=dm_channel, text=msg)
         except Exception as e:
             logger.exception(f"DM to assignee failed: {e}")

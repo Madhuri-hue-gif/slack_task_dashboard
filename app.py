@@ -1,10 +1,10 @@
 import threading
 from slack_bolt.adapter.socket_mode import SocketModeHandler
-from config import flask_app, socketio, slack_app, SLACK_APP_TOKEN, PUBLIC_HOST,FLASK_PORT
+from config import flask_app, socketio, slack_app, SLACK_APP_TOKEN, PUBLIC_HOST, FLASK_PORT
 from database import init_db
 from helpers import reminder_loop
-import slack_handlers  # Import to register Slack commands
-import web_routes      # Import to register Flask routes
+import slack_handlers
+import web_routes # Triggers route registration
 
 def run_flask():
     socketio.run(
@@ -12,6 +12,7 @@ def run_flask():
         host="0.0.0.0",
         port=FLASK_PORT
     )
+
 if __name__ == "__main__":
     init_db()
     
