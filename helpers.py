@@ -5,122 +5,177 @@ import sqlite3
 import calendar
 import pytz
 import re
-from datetime import datetime, timedelta
+import json
+from datetime import datetime, timedelta, time
 from dateparser.search import search_dates
 from google.genai import types
-from prompt_file import get_prompt
+# from prompt_file import get_prompt
 from groq import Groq
 from config import IST, DB_FILE, gemini_client, client, socketio, GROQ_API_KEY
 from database import get_username, get_task_db, add_task_db, delete_task_internal
 
 client = Groq(api_key=GROQ_API_KEY)
 
+# --- CONFIG ---
+OFFICE_START = 10  # 10 AM
+OFFICE_END = 19    # 7 PM
+
+def get_prompt(task_text):
+    now = datetime.now(IST).replace(second=0, microsecond=0)
+    
+    prompt = f"""
+    Current IST Time: {now.strftime("%H:%M")}
+    Current Date: {now.strftime("%d/%m")} ({now.strftime("%A")})
+    
+    Task: "{task_text}"
+    
+    You are a scheduler. Extract the deadline.
+    RULES:
+    1. Time "230" or "2 30" -> "02:30". "9" -> "09:00". "530" -> "05:30".
+    2. "Today" -> Date is {now.strftime("%d/%m")}.
+    3. Return 24-hour time format (HH:MM). 
+    4. If AM/PM is unclear, default to AM (Python logic will fix it).
+    
+    Return strict JSON:
+    {{
+        "date": "DD/MM",
+        "time": "HH:MM", 
+        "day": "Weekday",
+        "explicit_today": true/false,
+        "text": "Task text only"
+    }}
+    """
+    return prompt
+
+def parse_flexible_time(time_str):
+    """
+    Tries multiple formats to prevent crashing if LLM gives '2:30 PM' 
+    instead of '14:30' or '2.30'.
+    Returns a datetime.time object or None.
+    """
+    if not time_str: return None
+    
+    # Clean string: "2.30" -> "2:30", " 02:30 " -> "02:30"
+    t_str = time_str.strip().replace(".", ":").upper()
+    
+    formats = ["%H:%M", "%I:%M %p", "%I:%M%p", "%H %M"]
+    
+    for fmt in formats:
+        try:
+            return datetime.strptime(t_str, fmt).time()
+        except ValueError:
+            continue
+    return None
+
 def extract_due_date(task_text):
     now = datetime.now(IST).replace(second=0, microsecond=0)
     
-    # 1. Get Prompt
     prompt = get_prompt(task_text)
 
     try:
-        # 2. Call LLM
+        # 1. LLM Call
         response = client.chat.completions.create(
-            model="openai/gpt-oss-20b",
+            model="llama-3.1-8b-instant",
             messages=[{"role": "user", "content": prompt}],
-            temperature=0, # Keep temp 0 for consistency
+            temperature=0,
         )
-
         raw = response.choices[0].message.content
 
-        # 3. Robust JSON Parsing
+        # 2. Extract JSON safely
         try:
-            data = json.loads(raw)
-        except json.JSONDecodeError:
-            # Regex to find the first valid JSON object in text
-            match = re.search(r"\{.*?\}", raw, re.DOTALL)
-            if match:
-                data = json.loads(match.group(0))
-            else:
-                raise Exception("No JSON found")
+            match = re.search(r"\{.*\}", raw, re.DOTALL)
+            json_str = match.group(0) if match else raw
+            data = json.loads(json_str)
+        except Exception as e:
+            print(f"JSON Parse Error: {raw}")
+            raise e
 
+        # 3. Extract Fields
         date_str = data.get("date", "").strip()
         time_str = data.get("time", "").strip()
         day_str = data.get("day", "").strip()
+        explicit_today = data.get("explicit_today", False)
         cleaned_text = data.get("text", task_text).strip()
 
-        # 4. Logic Resolution
+        # 4. Resolve Date
+        final_date = None
         
-        # A. Handle Weekday (e.g., "Friday")
-        if day_str and not date_str:
+        # A. If date string exists (e.g., "01/12")
+        if date_str:
+            try:
+                # Try parsing DD/MM or DD:MM
+                clean_date = date_str.replace(":", "/")
+                parsed_date = datetime.strptime(f"{clean_date}/{now.year}", "%d/%m/%Y")
+                final_date = parsed_date.date()
+            except:
+                pass # Fail silently, fallback to logic below
+
+        # B. If no date, but weekday provided
+        if not final_date and day_str:
             weekday_map = {day.lower(): i for i, day in enumerate(calendar.day_name)}
-            target_idx = weekday_map.get(day_str.lower())
-            
-            if target_idx is not None:
-                current_weekday_idx = now.weekday()
-                days_ahead = (target_idx - current_weekday_idx)
-                
-                # If it's today or past day in current week, move to next week
-                if days_ahead <= 0: 
-                    days_ahead += 7
-                    
-                target_date = now + timedelta(days=days_ahead)
-                date_str = target_date.strftime("%d:%m")
+            if day_str.lower() in weekday_map:
+                target_idx = weekday_map[day_str.lower()]
+                today_idx = now.weekday()
+                days_ahead = target_idx - today_idx
+                if days_ahead <= 0: days_ahead += 7
+                final_date = (now + timedelta(days=days_ahead)).date()
 
-        # B. Handle Missing Date (Implies Today)
-        if not date_str:
-            date_str = now.strftime("%d:%m")
+        # C. Default to Today
+        if not final_date:
+            final_date = now.date()
 
-        # C. Handle Time Parsing & Smart Adjustment
-        final_dt = None
+        # 5. Resolve Time & Apply Office Logic
+        final_time = parse_flexible_time(time_str)
         
-        if date_str and time_str:
-            # Parse extracted date and time
-            parsed_dt = datetime.strptime(
-                f"{date_str}:{now.year} {time_str}", "%d:%m:%Y %H:%M"
-            ).replace(tzinfo=IST)
+        # If no time found, default to end of day
+        if not final_time:
+            final_time = time(23, 59)
 
-            # Smart Logic: If the user said "2:30" (AM implied) but it's currently 4 PM,
-            # and the date is Today, they likely meant 2:30 PM (14:30) or Tomorrow.
+        # Construct initial full datetime
+        dt = datetime.combine(final_date, final_time).replace(tzinfo=IST)
+
+        # --- OFFICE HOUR LOGIC ---
+        # If user says "230", LLM likely returns "02:30".
+        # We assume they mean PM if it's currently Office Hours or if 2:30 AM is absurd.
+        if dt.hour < OFFICE_START:
+            # Shift +12 hours (e.g., 02:30 -> 14:30)
+            dt_pm = dt + timedelta(hours=12)
             
-            # Case 1: Time passed today? 
-            if parsed_dt < now:
-                # Try adding 12 hours (e.g., 2:30 -> 14:30)
-                pm_shift = parsed_dt + timedelta(hours=12)
-                if pm_shift > now and pm_shift.day == parsed_dt.day:
-                    final_dt = pm_shift
-                else:
-                    # If even PM is past (or it was already PM), assume Tomorrow
-                    final_dt = parsed_dt + timedelta(days=1)
-            else:
-                final_dt = parsed_dt
-        
-        elif date_str and not time_str:
-            # Default to End of Day if no time specified
-            final_dt = datetime.strptime(
-                f"{date_str}:{now.year} 23:59", "%d:%m:%Y %H:%M"
-            ).replace(tzinfo=IST)
+            # Use PM version if:
+            # 1. User specifically said "today" (so we must stay on today)
+            # 2. OR if extracting 2:30 AM would put us in the past (and PM fixes it)
+            if explicit_today:
+                dt = dt_pm
+            elif dt < now and dt_pm > now:
+                dt = dt_pm
+            elif dt.hour < 6: # Even if not "today", assume nobody means 2 AM deadline
+                dt = dt_pm
 
-        # Output formatting
-        if final_dt:
-            data = (
-                final_dt.strftime("%d:%m"),
-                final_dt.strftime("%H:%M"),
-                final_dt.strftime("%A"),
-                cleaned_text
-            )
-            print(f"the data is {data}")
-            # return data
+        # --- PAST TIME CHECK ---
+        # If extracted time is still in the past (e.g. 10:00 AM today, but it's 2:00 PM)
+        # AND user didn't write "today" explicitly -> Move to Tomorrow
+        if dt < now and not explicit_today:
+            dt = dt + timedelta(days=1)
+
+        return (
+            dt.strftime("%d:%m"),
+            dt.strftime("%H:%M"),
+            dt.strftime("%A"),
+            cleaned_text
+        )
 
     except Exception as e:
-        print(f"Extraction Error: {e}")
-
-    # --- Fallback: 24 Hours from now ---
-    fallback_dt = now + timedelta(days=1)
-    return (
-        fallback_dt.strftime("%d:%m"),
-        fallback_dt.strftime("%H:%M"),
-        fallback_dt.strftime("%A"),
-        task_text.strip() # Return original text on fail
-    )
+        # PRINT THE ERROR to see why it fails
+        print(f"!!! Extraction Failed: {e}")
+        
+        # Fallback
+        default_due = now + timedelta(hours=24)
+        return (
+            default_due.strftime("%d:%m"),
+            default_due.strftime("%H:%M"),
+            default_due.strftime("%A"),
+            task_text
+        )
 
 def reminder_loop():
     """
