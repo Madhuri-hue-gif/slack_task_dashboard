@@ -1,36 +1,39 @@
 from datetime import datetime, timedelta
 from config import IST
 
+# --- CONFIGURATION ---
+OFFICE_START_HOUR = 10  # 10 AM
+OFFICE_END_HOUR = 19    # 7 PM (Buffer for 6:30 PM)
+
 def get_prompt(task_text):
-    date_time = datetime.now(IST).replace(second=0, microsecond=0)
-    query_day = date_time.strftime("%A")
-    current_date = date_time.strftime("%d:%m")
-    current_time = date_time.strftime("%H:%M")
+    now = datetime.now(IST).replace(second=0, microsecond=0)
+    current_date = now.strftime("%d:%m")
+    current_time = now.strftime("%H:%M")
+    query_day = now.strftime("%A")
 
     prompt = f"""
-    Reference Context:
-    - Current IST Day: {query_day}
-    - Current IST Date: {current_date}
+    Context:
     - Current IST Time: {current_time}
+    - Current Date: {current_date} ({query_day})
+    - Office Hours: 10:00 AM to 06:30 PM
+    - Office Hours can vary upto some hours on overtime in AM and PM
 
-    You are a precise date & time extractor for a task manager in India (IST).
+    Role: Task Scheduler. Extract deadline details.
     
-    Rules:
-    1. **Sloppy Time Handling**: 
-       - If you see 3-4 digits like "230", "930", "1100" -> treat as HH:MM ("02:30", "09:30", "11:00").
-       - "230 pm" -> "14:30".
-    2. **Cleanup**: REMOVE the detected date/time string from the 'text' field completely.
-    3. **Date Logic**:
-       - Only time implied? -> "{current_date}"
-       - "tomorrow" -> add +1 day to {current_date}
-       - Weekday (e.g. "Friday") -> If today is Friday, assume NEXT Friday.
+    Rules for Parsing:
+    1. **Sloppy Numbers**: "230" -> "02:30", "5" -> "05:00", "11" -> "11:00".
+    2. **Explicit Keywords**: 
+       - If text says "today", the date MUST be {current_date}.
+       - If text says "tomorrow", the date is {current_date} + 1 day.
+    3. **Cleanup**: Remove date/time words from 'text'.
     
-    Output JSON (Strictly):
+    Return JSON:
     {{
-        "date": "DD:MM" (or "" if unknown),
-        "time": "HH:MM" (24-hour format),
-        "day": "Weekday",
-        "text": "Task description ONLY (no date/time words)"
+        "date": "DD:MM" (or "" if implied),
+        "time": "HH:MM" (24-hour format, essential),
+        "day": "Weekday" (or ""),
+        "explicit_today": true/false (true if word 'today' is in text),
+        "text": "Cleaned task description"
     }}
     
     Task: "{task_text}"
