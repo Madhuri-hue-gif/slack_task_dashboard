@@ -1,5 +1,4 @@
 import re
-import sqlite3
 import jwt
 import uuid
 import time
@@ -7,6 +6,9 @@ from datetime import datetime
 from config import slack_app, PUBLIC_HOST,  SECRET_KEY,DATABASE_URL
 from database import add_task_db, delete_task_internal,get_db_connection
 from helpers import extract_due_date, complete_task_logic
+import pytz
+IST = pytz.timezone("Asia/Kolkata")
+
 
 @slack_app.command("/addtask")
 def add_task(ack, body, client, logger):

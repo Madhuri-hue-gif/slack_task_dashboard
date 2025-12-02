@@ -1,7 +1,7 @@
 import json
 import time
 import logging
-import sqlite3
+
 import calendar
 import pytz
 import re
@@ -22,35 +22,70 @@ OFFICE_START = 10  # 10 AM
 OFFICE_END = 19    # 7 PM
 
 def get_prompt(task_text):
+    IST = pytz.timezone("Asia/Kolkata")
     now = datetime.now(IST).replace(second=0, microsecond=0)
     
     prompt = f"""
-    Current IST Time: {now.strftime("%H:%M")}
-    Current Date: {now.strftime("%d/%m")} ({now.strftime("%A")})
-    
-    Task: "{task_text}"
+You are an expert date-time extraction engine.
 
-    You are a scheduler. Extract a clear deadline from the task.
-    If the task does NOT include any explicit time, ALWAYS set the final time to exactly 24 hours from now.
+📌 CURRENT DATETIME (IST)
+- Now: {now.strftime("%d/%m/%Y %H:%M")}
+- Today: {now.strftime("%d/%m")}
+- Weekday: {now.strftime("%A")}
 
-    
-    
-    RULES:
-    1. Time "230" or "2 30" -> "02:30". "9" -> "09:00". "530" -> "05:30".
-    2. "Today" -> Date is {now.strftime("%d/%m")}.
-    3. Return 24-hour time format (HH:MM). 
-    4. If AM/PM is unclear, default to AM (Python logic will fix it).
-    
-    Return strict JSON:
-    {{
-        "date": "DD/MM",
-        "time": "HH:MM", 
-        "day": "Weekday",
-        "explicit_today": true/false,
-        "text": "Task text only"
-    }}
+
+"{task_text}"
+
+Your job is to extract the EXACT deadline (date + time) from the text.
+
+---------------- RULES ----------------
+
+1. **Date Formats Allowed**
+   - "today", "tomorrow"
+   - Weekdays ("Monday", "Fri", etc.)
+   - Literal date formats ("3 Dec", "03/12", "1-12", "12.03")
+
+2. **Time Formats Allowed**
+   - "2pm", "2 pm", "2:30pm"
+   - "14:30"
+   - "230" → "02:30"
+   - "530pm" → "17:30"
+   - "9" → "09:00"
+   - "2 30" → "02:30"
+
+3. **IF NO TIME IS PROVIDED**
+   → Deadline MUST be exactly **24 hours from now**  
+   Example: If now = 02 Dec 3:19 PM → return = 03 Dec 3:19 PM
+
+4. **IF DATE IS PROVIDED BUT NO TIME**
+   → Default time = **10:00 AM** (office start)
+
+5. **IF TIME IS PROVIDED BUT NO DATE**
+   → Use TODAY  
+   → If time is already past → move to TOMORROW
+
+6. Convert everything to:
+   - Date: DD/MM/YYYY
+   - Time: HH:MM (24-hour format)
+
+7. Return ONLY valid JSON. No explanation, no markdown.
+
+---------------- OUTPUT FORMAT ----------------
+
+{{
+  "date": "DD/MM/YYYY",
+  "time": "HH:MM",
+  "final_datetime": "YYYY-MM-DD HH:MM",
+  "text": "cleaned task description",
+  "source": "parsed | default_24hr | inferred"
+}}
+
+Follow the rules strictly.
     """
+
     return prompt
+   
+    
 
 def parse_flexible_time(time_str):
     """
@@ -73,20 +108,15 @@ def parse_flexible_time(time_str):
     return None
 
 def extract_due_date(task_text):
-
-    print(f" task text:{task_text}")
+    IST = pytz.timezone("Asia/Kolkata")
     now = datetime.now(IST).replace(second=0, microsecond=0)
 
-    print(f"now_time {now}")
-
-    
     
     prompt = get_prompt(task_text)
 
-    print(f"promp is {prompt}")
 
     try:
-        print("Inside try ")
+        
         # 1. LLM Call
         response = groq_client.chat.completions.create(
 
@@ -96,7 +126,7 @@ def extract_due_date(task_text):
             temperature=0,
         )
         raw = response.choices[0].message.content
-        print(f" output is {raw}")
+        
         # 2. Extract JSON safely
         try:
             match = re.search(r"\{.*\}", raw, re.DOTALL)
@@ -147,7 +177,7 @@ def extract_due_date(task_text):
         if not final_time:
             final_time = time(23, 59)
 
-            
+
         dt = datetime.combine(final_date, final_time).replace(tzinfo=IST)
 
         # --- OFFICE HOUR LOGIC ---
@@ -290,22 +320,7 @@ def complete_task_logic(task_id, user_who_clicked, slack_channel=None, message_t
     task_text = task[2] or "[No description]"
     creator_id = task[1]
     user_name = get_username(user_who_clicked)
-    # due_str = task[4]
-
-    # --- ✅ CHECK IF LATE ---
-    # is_late = False
-    # if due_str:
-    #     try:
-    #         # Assuming due_str is ISO format
-    #         due_dt = datetime.fromisoformat(due_str)
-    #         # Ensure timezone awareness for comparison (using server local time if naive)
-    #         if due_dt.tzinfo is None:
-    #             due_dt = due_dt.replace(tzinfo=None) 
-            
-    #         if datetime.now() > due_dt:
-    #             is_late = True
-    #     except Exception as e:
-    #         logging.error(f"Date comparison failed: {e}")
+   
     
     final_remark = ""
     if note:

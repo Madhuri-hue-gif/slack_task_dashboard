@@ -1,5 +1,4 @@
 import os
-import sqlite3
 import logging
 import requests
 import jwt
@@ -170,7 +169,7 @@ def api_delete_task():
     except ValueError:
         return jsonify({"success": False, "error": "Invalid task_id"}), 400
 
-    conn = sqlite3.connect(DB_FILE)
+    conn = get_db_connection()
     c = conn.cursor()
     c.execute("SELECT user_id, text FROM tasks WHERE id=%s", (task_id,))
     row = c.fetchone()
