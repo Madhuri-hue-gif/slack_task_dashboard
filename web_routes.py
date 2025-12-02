@@ -6,8 +6,8 @@ import jwt
 import time
 from functools import wraps
 from flask import jsonify, send_from_directory, render_template_string, request, session, redirect, url_for
-from config import flask_app, socketio, client, SLACK_BOT_TOKEN, WEB_STYLE_PATH, WEB_DASH_PATH, DB_FILE, SECRET_KEY
-from database import get_tasks_for_user, delete_task_internal
+from config import flask_app, socketio, client, SLACK_BOT_TOKEN, WEB_STYLE_PATH, WEB_DASH_PATH, DATABASE_URL, SECRET_KEY
+from database import get_tasks_for_user, delete_task_internal,get_db_connection
 from helpers import edit_task, complete_task_logic
 
 # --- HELPER: Decorator to require login ---
@@ -38,13 +38,13 @@ def login():
         user_id = data["user_id"]
 
         # 2. Check Database (Is token valid and unused?)
-        conn = sqlite3.connect(DB_FILE, timeout=10)
+        conn = get_db_connection()
         c = conn.cursor()
         
         # Optional: cleanup old tokens
-        c.execute("DELETE FROM login_tokens WHERE expires_at < ?", (time.time(),))
+        c.execute("DELETE FROM login_tokens WHERE expires_at < %s", (time.time(),))
 
-        c.execute("SELECT * FROM login_tokens WHERE token_id = ?", (token_unique_id,))
+        c.execute("SELECT * FROM login_tokens WHERE token_id = %s", (token_unique_id,))
         row = c.fetchone()
         
         if not row:
@@ -52,7 +52,7 @@ def login():
             return "<h3>Link Invalid or Expired</h3><p>This link has already been used. Please run <code>/mytasks</code> again.</p>"
 
         # 3. Burn the Token (Delete it)
-        c.execute("DELETE FROM login_tokens WHERE token_id = ?", (token_unique_id,))
+        c.execute("DELETE FROM login_tokens WHERE token_id = %s", (token_unique_id,))
         conn.commit()
         conn.close()
 
@@ -172,7 +172,7 @@ def api_delete_task():
 
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
-    c.execute("SELECT user_id, text FROM tasks WHERE id=?", (task_id,))
+    c.execute("SELECT user_id, text FROM tasks WHERE id=%s", (task_id,))
     row = c.fetchone()
     conn.close()
 

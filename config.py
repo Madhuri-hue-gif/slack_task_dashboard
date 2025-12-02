@@ -11,6 +11,9 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+print("CONFIG LOADED FROM:", __file__)
+# print("POSTGRES PASSWORD =", POSTGRES["password"])
+
 # --- Configurations ---
 logging.basicConfig(level=logging.INFO)
 
@@ -20,7 +23,12 @@ IST = timezone(timedelta(hours=5, minutes=30))
 # Paths
 WEB_DASH_PATH = os.path.join("web", "dashboard")
 WEB_STYLE_PATH = os.path.join("web", "style")
-DB_FILE = "tasks.db"
+
+DATABASE_URL = os.getenv("DATABASE_URL")
+
+
+
+
 
 # API Keys & Host
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
@@ -28,7 +36,7 @@ GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 SLACK_BOT_TOKEN = os.getenv("SLACK_BOT_TOKEN")
 SLACK_APP_TOKEN = os.getenv("SLACK_APP_TOKEN")
 PUBLIC_HOST = os.getenv("PUBLIC_HOST")
-FLASK_PORT = int(os.getenv("FLASK_PORT", 4000))
+FLASK_PORT = int(os.getenv("FLASK_PORT", 5000))
 
 if not GEMINI_API_KEY:
     raise ValueError("❌ No API key provided. Please set GEMINI_API_KEY in your .env file.")

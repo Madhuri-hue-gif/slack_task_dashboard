@@ -6,15 +6,16 @@ import calendar
 import pytz
 import re
 import json
-from datetime import datetime, timedelta, time
+from datetime import datetime, timedelta
 from dateparser.search import search_dates
 from google.genai import types
 # from prompt_file import get_prompt
 from groq import Groq
-from config import IST, DB_FILE, gemini_client, client, socketio, GROQ_API_KEY
-from database import get_username, get_task_db, add_task_db, delete_task_internal
+from config import IST,  gemini_client, client, socketio, GROQ_API_KEY,DATABASE_URL
+from database import get_username, get_task_db, add_task_db, delete_task_internal,get_db_connection
 
-client = Groq(api_key=GROQ_API_KEY)
+groq_client = Groq(api_key=GROQ_API_KEY)
+
 
 # --- CONFIG ---
 OFFICE_START = 10  # 10 AM
@@ -28,8 +29,12 @@ def get_prompt(task_text):
     Current Date: {now.strftime("%d/%m")} ({now.strftime("%A")})
     
     Task: "{task_text}"
+
+    You are a scheduler. Extract a clear deadline from the task.
+    If the task does NOT include any explicit time, ALWAYS set the final time to exactly 24 hours from now.
+
     
-    You are a scheduler. Extract the deadline.
+    
     RULES:
     1. Time "230" or "2 30" -> "02:30". "9" -> "09:00". "530" -> "05:30".
     2. "Today" -> Date is {now.strftime("%d/%m")}.
@@ -68,19 +73,30 @@ def parse_flexible_time(time_str):
     return None
 
 def extract_due_date(task_text):
+
+    print(f" task text:{task_text}")
     now = datetime.now(IST).replace(second=0, microsecond=0)
+
+    print(f"now_time {now}")
+
+    
     
     prompt = get_prompt(task_text)
 
+    print(f"promp is {prompt}")
+
     try:
+        print("Inside try ")
         # 1. LLM Call
-        response = client.chat.completions.create(
+        response = groq_client.chat.completions.create(
+
             model="llama-3.1-8b-instant",
-            messages=[{"role": "user", "content": prompt}],
+            messages=[ {"role": "system", "content": "Respond ONLY with valid JSON. No markdown. No explanation."},
+    {"role": "user", "content": prompt}],
             temperature=0,
         )
         raw = response.choices[0].message.content
-
+        print(f" output is {raw}")
         # 2. Extract JSON safely
         try:
             match = re.search(r"\{.*\}", raw, re.DOTALL)
@@ -127,11 +143,11 @@ def extract_due_date(task_text):
         # 5. Resolve Time & Apply Office Logic
         final_time = parse_flexible_time(time_str)
         
-        # If no time found, default to end of day
+         # If no time found, default to end of day
         if not final_time:
             final_time = time(23, 59)
 
-        # Construct initial full datetime
+            
         dt = datetime.combine(final_date, final_time).replace(tzinfo=IST)
 
         # --- OFFICE HOUR LOGIC ---
@@ -190,13 +206,13 @@ def reminder_loop():
             date_key = now.strftime("%Y-%m-%d")
 
             # --- Fetch all pending assignments with task info ---
-            conn = sqlite3.connect(DB_FILE)
+            conn = get_db_connection()
             c = conn.cursor()
             c.execute("""
                 SELECT t.id, ta.assigned_to, t.text, ta.done, t.due
                 FROM task_assignments ta
                 JOIN tasks t ON t.id = ta.task_id
-                WHERE ta.done = 0 AND t.due IS NOT NULL
+                WHERE ta.done = TRUE AND t.due IS NOT NULL
             """)
             rows = c.fetchall()
             conn.close()
@@ -295,7 +311,7 @@ def complete_task_logic(task_id, user_who_clicked, slack_channel=None, message_t
     if note:
         final_remark = f"{note}\n\n— Added by @{user_name}"
 
-    conn = sqlite3.connect(DB_FILE)
+    conn = get_db_connection()
     c = conn.cursor()
 
     c.execute(
@@ -318,7 +334,7 @@ def complete_task_logic(task_id, user_who_clicked, slack_channel=None, message_t
     elif user_who_clicked == creator_id:
         # Creator marks complete: mark all assignments done
         c.execute(
-            "UPDATE task_assignments SET done=1, completed_at=?, remarks=? WHERE task_id=? AND done=0",
+            "UPDATE task_assignments SET done=1, completed_at=?, remarks=? WHERE task_id=? AND done=TRUE",
             (timestamp, final_remark, task_id)
         )
     else:
@@ -326,7 +342,7 @@ def complete_task_logic(task_id, user_who_clicked, slack_channel=None, message_t
         return False, "You are not allowed to complete this task."
 
     # Update main task if all assignments done
-    c.execute("SELECT COUNT(*) FROM task_assignments WHERE task_id=? AND done=0", (task_id,))
+    c.execute("SELECT COUNT(*) FROM task_assignments WHERE task_id=? AND done=TRUE", (task_id,))
     remaining = c.fetchone()[0]
     if remaining == 0:
         c.execute("UPDATE tasks SET done=1, completed_at=? WHERE id=?",
@@ -364,7 +380,7 @@ def complete_task_logic(task_id, user_who_clicked, slack_channel=None, message_t
     return True, f"🎉 <@{user_who_clicked}> completed the task: *{task_text}* (ID: {task_id})"
 
 def edit_task(task_id, new_assignees, editor_user_id, client, logger, new_text=None, new_due=None):
-    conn = sqlite3.connect(DB_FILE)
+    conn = get_db_connection()
     c = conn.cursor()
 
     # 1. Fetch task details AND creator_id

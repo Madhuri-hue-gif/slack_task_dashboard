@@ -4,12 +4,13 @@ import jwt
 import uuid
 import time
 from datetime import datetime
-from config import slack_app, PUBLIC_HOST, DB_FILE, SECRET_KEY
-from database import add_task_db, delete_task_internal
+from config import slack_app, PUBLIC_HOST,  SECRET_KEY,DATABASE_URL
+from database import add_task_db, delete_task_internal,get_db_connection
 from helpers import extract_due_date, complete_task_logic
 
 @slack_app.command("/addtask")
 def add_task(ack, body, client, logger):
+    print("Inside add task")
     ack()
     user_id_invoker = body["user_id"]
     raw_text = body.get("text", "").strip()
@@ -21,11 +22,12 @@ def add_task(ack, body, client, logger):
             text="⚠️ Please provide a task. Example: `/addtask review the report <@U123> by tomorrow`"
         )
         return
-
+    print("After if cond")
     mentions = re.findall(r"<@([A-Z0-9]+)(?:\|[^>]+)?>", raw_text)
     assigned_to_user_ids = mentions if mentions else [user_id_invoker]
     task_text = re.sub(r"<@([A-Z0-9]+)(?:\|[^>]+)?>", "", raw_text).strip()
-
+    
+    print("before date extr")
     date_str, time_str, day_str, task_text = extract_due_date(task_text)
 
     due = None
@@ -84,9 +86,9 @@ def delete_task(ack, body, client, logger):
 
     task_id = int(text)
 
-    conn = sqlite3.connect(DB_FILE)
+    conn = get_db_connection()
     c = conn.cursor()
-    c.execute("SELECT user_id FROM tasks WHERE id=?", (task_id,))
+    c.execute("SELECT user_id FROM tasks WHERE id=%s", (task_id,))
     row = c.fetchone()
     conn.close()
 
@@ -129,9 +131,9 @@ def mytasks(ack, body, client):
     expiration_time = time.time() + 3600
 
     # 2. Save to DB (One-time use)
-    conn = sqlite3.connect(DB_FILE, timeout=10)
+    conn = get_db_connection()
     c = conn.cursor()
-    c.execute("INSERT INTO login_tokens (token_id, user_id, expires_at) VALUES (?, ?, ?)", 
+    c.execute("INSERT INTO login_tokens (token_id, user_id, expires_at) VALUES (%s, %s, %s)", 
               (token_unique_id, user_id, expiration_time))
     conn.commit()
     conn.close()

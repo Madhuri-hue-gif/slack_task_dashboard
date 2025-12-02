@@ -1,47 +1,237 @@
-import sqlite3
-from datetime import datetime
-from config import DB_FILE, client, IST
+# import sqlite3
+# from datetime import datetime
+# from config import DB_FILE, client, IST
+
+# # Cache for usernames
+# user_cache = {}
+
+# def init_db():
+#     conn = sqlite3.connect(DB_FILE)
+#     c = conn.cursor()
+
+#     # --- Main tasks table ---
+#     c.execute("""
+#     CREATE TABLE IF NOT EXISTS tasks (
+#         id INTEGER PRIMARY KEY AUTOINCREMENT,
+#         user_id TEXT,             -- The creator of the task
+#         text TEXT,
+#         created_at TEXT,
+#         due TEXT,
+#         file_url TEXT,
+#         done INTEGER DEFAULT 0,
+#         completed_at TEXT
+#     )
+#     """)
+
+#     # --- Task assignments table ---
+#     c.execute("""
+#     CREATE TABLE IF NOT EXISTS task_assignments (
+#         id INTEGER PRIMARY KEY AUTOINCREMENT,
+#         task_id INTEGER,
+#         assigned_to TEXT,
+#         done INTEGER DEFAULT 0,
+#         completed_at TEXT,
+#         remarks TEXT,
+#         FOREIGN KEY (task_id) REFERENCES tasks(id)
+#     )
+#     """)
+
+#     # --- NEW: One-Time Login Tokens Table ---
+#     c.execute("""
+#     CREATE TABLE IF NOT EXISTS login_tokens (
+#         token_id TEXT PRIMARY KEY,
+#         user_id TEXT,
+#         expires_at REAL
+#     )
+#     """)
+
+#     conn.commit()
+#     conn.close()
+
+# def get_username(uid):
+#     if not uid:
+#         return "-"
+#     if uid in user_cache:
+#         return user_cache[uid]
+#     try:
+#         info = client.users_info(user=uid)
+#         username = info["user"]["profile"]["display_name"] or info["user"]["name"]
+#         user_cache[uid] = username
+#         return username
+#     except Exception:
+#         return uid
+
+# def add_task_db(creator, assignees, text, due=None, file_url=None):
+#     created_at = datetime.now(IST).isoformat()
+#     conn = sqlite3.connect(DB_FILE)
+#     c = conn.cursor()
+
+#     c.execute("""
+#     INSERT INTO tasks (user_id, text, created_at, due, file_url)
+#     VALUES (?, ?, ?, ?, ?)
+#     """, (creator, text, created_at, due, file_url))
+
+#     task_id = c.lastrowid
+
+#     for user in assignees:
+#         c.execute("""
+#         INSERT INTO task_assignments (task_id, assigned_to)
+#         VALUES (?, ?)
+#         """, (task_id, user))
+    
+#     conn.commit()
+#     conn.close()
+#     return task_id
+
+# def complete_task_db(task_id, user_id):
+#     conn = sqlite3.connect(DB_FILE)
+#     c = conn.cursor()
+#     c.execute("""UPDATE task_assignments 
+#                  SET done=1, completed_at=? 
+#                  WHERE task_id=? AND assigned_to=?""",
+#               (datetime.now().isoformat(), task_id, user_id))
+#     conn.commit()
+#     conn.close()
+
+# def get_task_db(task_id):
+#     conn = sqlite3.connect(DB_FILE)
+#     c = conn.cursor()
+#     c.execute("SELECT * FROM tasks WHERE id=?", (task_id,))
+#     row = c.fetchone()
+#     conn.close()
+#     return row
+
+# def get_tasks_for_user(uid):
+#     conn = sqlite3.connect(DB_FILE)
+#     c = conn.cursor()
+#     c.execute("""
+#         SELECT t.id, t.user_id, ta.assigned_to, t.text, t.due, ta.done, t.created_at, ta.remarks
+#         FROM task_assignments ta
+#         JOIN tasks t ON ta.task_id = t.id
+#         WHERE ta.assigned_to = ? OR t.user_id = ?
+#         ORDER BY t.id DESC
+#     """, (uid, uid))
+#     rows = c.fetchall()
+#     conn.close()
+#     return [
+#         {
+#             "id": r[0],
+#             "creator_id": r[1],
+#             "creator": get_username(r[1]),
+#             "assigned_to_id": r[2],          
+#             "assigned_to_name": get_username(r[2]),
+#             "text": r[3],
+#             "due": r[4] or "-",
+#             "done": bool(r[5]),
+#             "created_at": r[6] or "-",
+#             "remarks": r[7] or "",
+#         }
+#         for r in rows
+#     ]
+
+# def delete_task_internal(task_id, user_id, client, logger):
+#     conn = sqlite3.connect(DB_FILE)
+#     c = conn.cursor()
+#     c.execute("SELECT id, user_id, text FROM tasks WHERE id=?", (task_id,))
+#     row = c.fetchone()
+
+#     if not row:
+#         conn.close()
+#         logger.error(f"Delete internal failed: Task {task_id} not found")
+#         return False
+
+#     _, creator_id, task_text = row
+
+#     c.execute("SELECT assigned_to FROM task_assignments WHERE task_id=?", (task_id,))
+#     assignees = [r[0] for r in c.fetchall()]
+#     conn.close()
+
+#     if user_id != creator_id and user_id not in assignees:
+#         logger.error("Permission denied for delete (internal call).")
+#         return False
+
+#     conn = sqlite3.connect(DB_FILE)
+#     c = conn.cursor()
+#     c.execute("DELETE FROM tasks WHERE id=?", (task_id,))
+#     c.execute("DELETE FROM task_assignments WHERE task_id=?", (task_id,))
+#     conn.commit()
+#     conn.close()
+
+#     if creator_id != user_id:
+#         try:
+#             dm = client.conversations_open(users=creator_id)
+#             dm_channel = dm["channel"]["id"]
+#             msg = (f"❗ *Task Deleted*\n<@{user_id}> deleted your task:\n➡️ *{task_text}*")
+#             client.chat_postMessage(channel=dm_channel, text=msg)
+#         except Exception as e:
+#             logger.exception(f"DM to creator failed: {e}")
+
+#     for assigned_user in assignees:
+#         if assigned_user == user_id:
+#             continue
+#         try:
+#             dm = client.conversations_open(users=assigned_user)
+#             dm_channel = dm["channel"]["id"]
+#             msg = (f"❗ *Assigned Task Deleted*\nThe task assigned to you was deleted:\n➡️ *{task_text}*\nDeleted by: <@{user_id}>")
+#             client.chat_postMessage(channel=dm_channel, text=msg)
+#         except Exception as e:
+#             logger.exception(f"DM to assignee failed: {e}")
+
+#     return True
+import psycopg2
+from psycopg2.extras import RealDictCursor
+from datetime import datetime,timezone,timedelta
+from config import client, IST, DATABASE_URL
 
 # Cache for usernames
 user_cache = {}
 
+def get_db_connection():
+    """Helper to get a Postgres connection"""
+    try:
+        conn = psycopg2.connect(DATABASE_URL)
+        return conn
+    except Exception as e:
+        print("❌ Database connection error:", e)
+        raise
+    return conn
+
 def init_db():
-    conn = sqlite3.connect(DB_FILE)
+    # Since you already created tables in PgAdmin, 
+    # we can leave this strictly for creating them if they are missing.
+    # Note: syntax for AUTOINCREMENT in Postgres is SERIAL.
+    conn = get_db_connection()
     c = conn.cursor()
 
-    # --- Main tasks table ---
     c.execute("""
     CREATE TABLE IF NOT EXISTS tasks (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        user_id TEXT,             -- The creator of the task
+        id SERIAL PRIMARY KEY,
+        user_id TEXT,
         text TEXT,
-        created_at TEXT,
-        due TEXT,
+        created_at TIMESTAMP WITH TIME ZONE,
+        due TIMESTAMP WITH TIME ZONE,
         file_url TEXT,
-        done INTEGER DEFAULT 0,
-        completed_at TEXT
+       done BOOLEAN DEFAULT FALSE,
+       completed_at TIMESTAMP WITH TIME ZONE
     )
     """)
 
-    # --- Task assignments table ---
     c.execute("""
     CREATE TABLE IF NOT EXISTS task_assignments (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        task_id INTEGER,
+        id SERIAL PRIMARY KEY,
+        task_id INTEGER REFERENCES tasks(id) ON DELETE CASCADE,
         assigned_to TEXT,
-        done INTEGER DEFAULT 0,
-        completed_at TEXT,
-        remarks TEXT,
-        FOREIGN KEY (task_id) REFERENCES tasks(id)
+        done BOOLEAN DEFAULT FALSE,
+       completed_at TIMESTAMP WITH TIME ZONE,
+        remarks TEXT
     )
     """)
 
-    # --- NEW: One-Time Login Tokens Table ---
     c.execute("""
     CREATE TABLE IF NOT EXISTS login_tokens (
         token_id TEXT PRIMARY KEY,
         user_id TEXT,
-        expires_at REAL
+        expires_at DOUBLE PRECISION
     )
     """)
 
@@ -63,20 +253,22 @@ def get_username(uid):
 
 def add_task_db(creator, assignees, text, due=None, file_url=None):
     created_at = datetime.now(IST).isoformat()
-    conn = sqlite3.connect(DB_FILE)
+    conn = get_db_connection()
     c = conn.cursor()
 
+    # UPDATED: Use %s and RETURNING id
     c.execute("""
     INSERT INTO tasks (user_id, text, created_at, due, file_url)
-    VALUES (?, ?, ?, ?, ?)
+    VALUES (%s, %s, %s, %s, %s)
+    RETURNING id
     """, (creator, text, created_at, due, file_url))
 
-    task_id = c.lastrowid
+    task_id = c.fetchone()[0]
 
     for user in assignees:
         c.execute("""
         INSERT INTO task_assignments (task_id, assigned_to)
-        VALUES (?, ?)
+        VALUES (%s, %s)
         """, (task_id, user))
     
     conn.commit()
@@ -84,35 +276,44 @@ def add_task_db(creator, assignees, text, due=None, file_url=None):
     return task_id
 
 def complete_task_db(task_id, user_id):
-    conn = sqlite3.connect(DB_FILE)
+    conn = get_db_connection()
     c = conn.cursor()
+    # UPDATED: Use %s
     c.execute("""UPDATE task_assignments 
-                 SET done=1, completed_at=? 
-                 WHERE task_id=? AND assigned_to=?""",
-              (datetime.now().isoformat(), task_id, user_id))
+                 SET done=1, completed_at=%s 
+                 WHERE task_id=%s AND assigned_to=%s""",
+              (datetime.now(IST), task_id, user_id))
     conn.commit()
     conn.close()
 
 def get_task_db(task_id):
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
-    c.execute("SELECT * FROM tasks WHERE id=?", (task_id,))
+    conn = get_db_connection()
+    # Use RealDictCursor to access columns by name easily, 
+    # or standard cursor for tuple access (existing code expects tuples in some places)
+    c = conn.cursor() 
+    c.execute("SELECT * FROM tasks WHERE id=%s", (task_id,))
     row = c.fetchone()
     conn.close()
     return row
 
 def get_tasks_for_user(uid):
-    conn = sqlite3.connect(DB_FILE)
+    conn = get_db_connection()
+    # Using tuple cursor to match your existing index-based logic (r[0], r[1]...)
     c = conn.cursor()
+    
+    # UPDATED: Use %s
     c.execute("""
         SELECT t.id, t.user_id, ta.assigned_to, t.text, t.due, ta.done, t.created_at, ta.remarks
         FROM task_assignments ta
         JOIN tasks t ON ta.task_id = t.id
-        WHERE ta.assigned_to = ? OR t.user_id = ?
+        WHERE ta.assigned_to = %s OR t.user_id = %s
         ORDER BY t.id DESC
     """, (uid, uid))
     rows = c.fetchall()
     conn.close()
+    
+    # Note: Postgres boolean returns True/False. SQLite returned 0/1.
+    # We cast bool(r[5]) to be safe.
     return [
         {
             "id": r[0],
@@ -130,9 +331,11 @@ def get_tasks_for_user(uid):
     ]
 
 def delete_task_internal(task_id, user_id, client, logger):
-    conn = sqlite3.connect(DB_FILE)
+    conn = get_db_connection()
     c = conn.cursor()
-    c.execute("SELECT id, user_id, text FROM tasks WHERE id=?", (task_id,))
+    
+    # UPDATED: Use %s
+    c.execute("SELECT id, user_id, text FROM tasks WHERE id=%s", (task_id,))
     row = c.fetchone()
 
     if not row:
@@ -142,7 +345,7 @@ def delete_task_internal(task_id, user_id, client, logger):
 
     _, creator_id, task_text = row
 
-    c.execute("SELECT assigned_to FROM task_assignments WHERE task_id=?", (task_id,))
+    c.execute("SELECT assigned_to FROM task_assignments WHERE task_id=%s", (task_id,))
     assignees = [r[0] for r in c.fetchall()]
     conn.close()
 
@@ -150,12 +353,18 @@ def delete_task_internal(task_id, user_id, client, logger):
         logger.error("Permission denied for delete (internal call).")
         return False
 
-    conn = sqlite3.connect(DB_FILE)
+    conn = get_db_connection()
     c = conn.cursor()
-    c.execute("DELETE FROM tasks WHERE id=?", (task_id,))
-    c.execute("DELETE FROM task_assignments WHERE task_id=?", (task_id,))
+    # UPDATED: Use %s
+    c.execute("DELETE FROM tasks WHERE id=%s", (task_id,))
+    # Note: If you set up ON DELETE CASCADE in Postgres, the next line is optional,
+    # but keeping it is safer if you didn't set up cascades.
+    c.execute("DELETE FROM task_assignments WHERE task_id=%s", (task_id,))
     conn.commit()
     conn.close()
+
+    # ... (Keep the rest of the notification logic exactly as it is) ...
+
 
     if creator_id != user_id:
         try:
@@ -178,3 +387,17 @@ def delete_task_internal(task_id, user_id, client, logger):
             logger.exception(f"DM to assignee failed: {e}")
 
     return True
+
+
+
+
+
+
+
+
+
+
+
+
+
+
