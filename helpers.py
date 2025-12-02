@@ -1,7 +1,6 @@
 import json
 import time
 import logging
-
 import calendar
 import pytz
 import re
@@ -330,7 +329,7 @@ def complete_task_logic(task_id, user_who_clicked, slack_channel=None, message_t
     c = conn.cursor()
 
     c.execute(
-        "SELECT id, done FROM task_assignments WHERE task_id=? AND assigned_to=?",
+        "SELECT id, done FROM task_assignments WHERE task_id=%s AND assigned_to=%s",
         (task_id, user_who_clicked)
     )
     assignment = c.fetchone()
@@ -343,13 +342,13 @@ def complete_task_logic(task_id, user_who_clicked, slack_channel=None, message_t
             return False, "Task already completed."
         
         c.execute(
-            "UPDATE task_assignments SET done=1, completed_at=?, remarks=? WHERE id=?",
+            "UPDATE task_assignments SET done=TRUE, completed_at=%s, remarks=%s WHERE id=%s",
             (timestamp, final_remark, assignment_id)
         )
     elif user_who_clicked == creator_id:
         # Creator marks complete: mark all assignments done
         c.execute(
-            "UPDATE task_assignments SET done=1, completed_at=?, remarks=? WHERE task_id=? AND done=TRUE",
+            "UPDATE task_assignments SET done=TRUE, completed_at=%s, remarks=%s WHERE task_id=%s AND done=TRUE",
             (timestamp, final_remark, task_id)
         )
     else:
@@ -357,10 +356,10 @@ def complete_task_logic(task_id, user_who_clicked, slack_channel=None, message_t
         return False, "You are not allowed to complete this task."
 
     # Update main task if all assignments done
-    c.execute("SELECT COUNT(*) FROM task_assignments WHERE task_id=? AND done=TRUE", (task_id,))
+    c.execute("SELECT COUNT(*) FROM task_assignments WHERE task_id=%s AND done=TRUE", (task_id,))
     remaining = c.fetchone()[0]
     if remaining == 0:
-        c.execute("UPDATE tasks SET done=1, completed_at=? WHERE id=?",
+        c.execute("UPDATE tasks SET done=TRUE, completed_at=%s WHERE id=%s",
                   (timestamp, task_id))
 
     conn.commit()
@@ -399,7 +398,7 @@ def edit_task(task_id, new_assignees, editor_user_id, client, logger, new_text=N
     c = conn.cursor()
 
     # 1. Fetch task details AND creator_id
-    c.execute("SELECT user_id, text, due, file_url FROM tasks WHERE id=?", (task_id,))
+    c.execute("SELECT user_id, text, due, file_url FROM tasks WHERE id=%s", (task_id,))
     row = c.fetchone()
 
     if not row:
