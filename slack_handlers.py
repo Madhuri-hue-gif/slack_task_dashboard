@@ -151,5 +151,5 @@ def mytasks(ack, body, client):
     
     client.chat_postMessage(
         channel=user_id, 
-        text=f"🧭 *Secure Dashboard Access*\n<{url}|Click here to open your Dashboard>\n_Link is valid for 15 mins and works once._"
+        text=f"🧭 *Secure Dashboard Access*\n<{url}|Click here to open your Dashboard>\n_Link is valid for 1 hour and works once._"
     )
