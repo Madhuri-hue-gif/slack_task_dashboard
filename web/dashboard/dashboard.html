@@ -33,7 +33,7 @@
         <option value="">Due(All)</option>
         <option value="today">Due Today</option>
        <option value="tommorow">Due Tommorow</option>
-       <option value="overdue">Overdue</option>
+       <option value="overdue">Deadline Breached</option>
     </select>
 
   </div>
@@ -273,10 +273,23 @@ async function submitCompleteTask() {
              if(statusFilter === "pending" && t.done) return false;
              if(t.due && t.due !== "-"){
                let dueDate=new Date(t.due);
-               if (dueFilter === "today" && dueDate.toDateString()!== today.toDateString()) return false;
-               if (dueFilter === "tommorow" &&  dueDate.toDateString()!==tommorow.toDateString()) return false;
-               if (dueFilter === "overdue" && dueDate < today && !t.done) return false;
-             }
+               let dueDateOnly = new Date(dueDate.getFullYear(), dueDate.getMonth(), dueDate.getDate());
+        let todayOnly = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+        let tomorrowOnly = new Date(tommorow.getFullYear(), tommorow.getMonth(), tommorow.getDate());
+
+        // TODAY
+        if (dueFilter === "today" && dueDateOnly.getTime() !== todayOnly.getTime()) 
+            return false;
+
+        // TOMORROW
+        if (dueFilter === "tommorow" && dueDateOnly.getTime() !== tomorrowOnly.getTime()) 
+            return false;
+
+        // OVERDUE
+        if (dueFilter === "overdue" && dueDateOnly >= todayOnly) 
+            return false;  
+        if (dueFilter === "overdue" && t.done) 
+            return false;}
              return true;
           });
           // ... (End filter logic) ...

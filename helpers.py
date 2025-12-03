@@ -241,7 +241,7 @@ def reminder_loop():
                 SELECT t.id, ta.assigned_to, t.text, ta.done, t.due
                 FROM task_assignments ta
                 JOIN tasks t ON t.id = ta.task_id
-                WHERE ta.done = TRUE AND t.due IS NOT NULL
+                WHERE ta.done = FALSE AND t.due IS NOT NULL
             """)
             rows = c.fetchall()
             conn.close()
@@ -251,13 +251,18 @@ def reminder_loop():
                     continue  # skip if no assigned user
 
                 # Parse due datetime
+                # Parse due datetime safely
                 try:
-                    due_dt = datetime.fromisoformat(due_str)
+                    if isinstance(due_str, str):
+                        due_dt = datetime.fromisoformat(due_str)
+                    else:
+                        due_dt = due_str  # already a datetime object
                     if due_dt.tzinfo is None:
                         due_dt = tz.localize(due_dt)
                 except Exception:
-                    logging.exception(f"Failed to parse due datetime for task {task_id}")
-                    continue
+                     logging.exception(f"Failed to parse due datetime for task {task_id}")
+                     continue
+
 
                 time_left = (due_dt - now).total_seconds()
 
@@ -348,7 +353,7 @@ def complete_task_logic(task_id, user_who_clicked, slack_channel=None, message_t
     elif user_who_clicked == creator_id:
         # Creator marks complete: mark all assignments done
         c.execute(
-            "UPDATE task_assignments SET done=TRUE, completed_at=%s, remarks=%s WHERE task_id=%s AND done=TRUE",
+            "UPDATE task_assignments SET done=TRUE, completed_at=%s, remarks=%s WHERE task_id=%s ",
             (timestamp, final_remark, task_id)
         )
     else:
