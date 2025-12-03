@@ -30,9 +30,9 @@
      
       <!--Filter by due -->
       <select id="filterDue" onchange="loadTasks()">
-        <option value="">Due(All)</option>
-        <option value="today">Due Today</option>
-       <option value="tommorow">Due Tommorow</option>
+        <option value="">All</option>
+        <option value="today">Today</option>
+       <option value="tommorow">Tommorow</option>
        <option value="overdue">Deadline Breached</option>
     </select>
 
@@ -250,54 +250,76 @@ async function submitCompleteTask() {
     let globalTasks = {}; 
 
     function loadTasks() {
-      fetch(`/api/tasks/${userId}`)
-        .then(r => r.json())
-        .then(tasks => {
+  fetch(`/api/tasks/${userId}`)
+    .then(r => r.json())
+    .then(tasks => {
+
+      // Store tasks for easy lookup later
+      globalTasks = {};
+      tasks.forEach(t => globalTasks[t.id] = t);
+
+      // ... (Keep your existing filter logic here) ...
+      const assignedFilter = document.getElementById("filterAssigned").value.toLowerCase();
+      const statusFilter = document.getElementById("filterStatus").value;
+      const dueFilter = document.getElementById("filterDue").value;
+      
+      const today = new Date();
+      const tommorow = new Date();
+      tommorow.setDate(today.getDate() + 1);
+
+      // Create "Zero Time" versions of Today and Tomorrow outside the loop for performance
+      let todayOnly = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+      let tomorrowOnly = new Date(tommorow.getFullYear(), tommorow.getMonth(), tommorow.getDate());
+
+      tasks = tasks.filter(t => {
+        if (assignedFilter && (!t.assigned_to_name || !t.assigned_to_name.toLowerCase().includes(assignedFilter))) return false;
+        if (statusFilter === "done" && !t.done) return false;
+        if (statusFilter === "pending" && t.done) return false;
+
+        if (t.due && t.due !== "-") {
+          // --- FIX STARTS HERE ---
           
-          // Store tasks for easy lookup later
-          globalTasks = {};
-          // ✅ Use assignment_id here so notes don't overwrite each other
-          tasks.forEach(t => globalTasks[t.id] = t);
+          // Incoming format: "DD/MM/YYYY HH:MM" (e.g., "04/12/2025 10:14")
+          // Split date and time
+          const [dateStr, timeStr] = t.due.split(' ');
+          
+          if (!dateStr) return false; // Safety check
 
-          // ... (Keep your existing filter logic here) ...
-          const assignedFilter = document.getElementById("filterAssigned").value.toLowerCase();
-          const statusFilter = document.getElementById("filterStatus").value;
-          const dueFilter = document.getElementById("filterDue").value;
-          const today = new Date();
-          const tommorow = new Date();
-          tommorow.setDate(today.getDate()+1);
+          // Split Day, Month, Year
+          const [day, month, year] = dateStr.split('/');
 
-          tasks = tasks.filter(t => {
-             if(assignedFilter && (!t.assigned_to_name || !t.assigned_to_name.toLowerCase().includes(assignedFilter))) return false;
-             if(statusFilter === "done" && !t.done) return false;
-             if(statusFilter === "pending" && t.done) return false;
-             if(t.due && t.due !== "-"){
-               let dueDate=new Date(t.due);
-               let dueDateOnly = new Date(dueDate.getFullYear(), dueDate.getMonth(), dueDate.getDate());
-        let todayOnly = new Date(today.getFullYear(), today.getMonth(), today.getDate());
-        let tomorrowOnly = new Date(tommorow.getFullYear(), tommorow.getMonth(), tommorow.getDate());
+          // Create Date Object: new Date(year, monthIndex, day)
+          // IMPORTANT: Javascript months are 0-indexed (0=Jan, 11=Dec), so we do month - 1
+          let dueDate = new Date(year, month - 1, day);
+          
+          // Create a midnight version for comparison
+          let dueDateOnly = new Date(dueDate.getFullYear(), dueDate.getMonth(), dueDate.getDate());
+          
+          // --- FIX ENDS HERE ---
 
-        // TODAY
-        if (dueFilter === "today" && dueDateOnly.getTime() !== todayOnly.getTime()) 
+          // TODAY
+          if (dueFilter === "today" && dueDateOnly.getTime() !== todayOnly.getTime())
             return false;
 
-        // TOMORROW
-        if (dueFilter === "tommorow" && dueDateOnly.getTime() !== tomorrowOnly.getTime()) 
+          // TOMORROW
+          if (dueFilter === "tommorow" && dueDateOnly.getTime() !== tomorrowOnly.getTime())
             return false;
 
-        // OVERDUE
-        if (dueFilter === "overdue" && dueDateOnly >= todayOnly) 
-            return false;  
-        if (dueFilter === "overdue" && t.done) 
-            return false;}
-             return true;
-          });
-          // ... (End filter logic) ...
-
-          if (!tasks.length) {
-            document.getElementById("tasks").innerHTML = "<p>No tasks found.</p>";
-            return;
+          // OVERDUE
+          // Note: Logic allows overdue if date is strictly before today AND task is not done
+          if (dueFilter === "overdue") {
+            if (t.done) return false; // If done, not overdue
+            if (dueDateOnly.getTime() >= todayOnly.getTime()) return false; // If today or future, not overdue
           }
+        }
+        return true;
+      });
+      // ... (End filter logic) ...
+
+      if (!tasks.length) {
+        document.getElementById("tasks").innerHTML = "<p>No tasks found.</p>";
+        return;
+      }
 
         const html = `
             <table>
